@@ -1,0 +1,63 @@
+{
+  "MiniMaxH3SpeedCache": {
+    "display_name": "⚡ MiniMax H3 Speed Cache · Safe",
+    "description": "Safe residual-cache acceleration for MiniMax H3. Uses tested defaults, automatically manages GPU/CPU cache storage, and never changes GPU clocks, power limits, voltage, or fan settings.",
+    "inputs": {
+      "model": {
+        "name": "MiniMax H3 Model",
+        "tooltip": "Connect the MODEL output of a MiniMax H3 model loader. Only MiniMaxH3Model is supported; image models and other video models are rejected. This input has no numeric range or default model."
+      },
+      "reuse_threshold": {
+        "name": "★ Reuse Threshold",
+        "tooltip": "CORE SPEED/QUALITY CONTROL. Reuse a cached Transformer residual when accumulated feature change is below this value. Default: 0.12; range: 0.00–1.00; step: 0.005. Higher values can skip more work and run faster, but increase risks to fine detail, motion continuity, and audio/video consistency. At 0.00 no steps are skipped. Try 0.06–0.08 for quality, 0.10 for balance, or 0.12 for the tested default profile."
+      },
+      "start_percent": {
+        "name": "★ Acceleration Start",
+        "tooltip": "CORE SAMPLING WINDOW CONTROL. The sampling progress at which cache reuse may start. Default: 0.10 (10%); range: 0.00–1.00; step: 0.01. Starting earlier may improve speed but can affect structure and motion because early sampling changes rapidly. Must be lower than Acceleration End."
+      },
+      "end_percent": {
+        "name": "★ Acceleration End",
+        "tooltip": "CORE SAMPLING WINDOW CONTROL. Cache reuse stops after this sampling progress so final steps run fully and refine detail. Default: 0.90 (90%); range: 0.00–1.00; step: 0.01. Ending later may be faster but increases risk to texture, edges, motion, and audio detail. Must be higher than Acceleration Start."
+      },
+      "max_consecutive_skips": {
+        "name": "★ Maximum Consecutive Skips",
+        "tooltip": "CORE SAFETY LIMIT. Maximum number of consecutive cache reuses before one full Transformer pass is forced. Default: 2; range: 1–5; step: 1. Higher values may be faster but noticeably increase motion, subject-stability, and audio-sync risks. Use 1 for quality; the tested default is 2; values above 2 are not recommended without comparison tests."
+      },
+      "cache_device": {
+        "name": "Cache Device",
+        "tooltip": "Where the large residual cache is stored. Default: auto. auto selects GPU or CPU from actual free memory and the configured reserves (recommended). gpu is normally fastest but consumes more VRAM. cpu saves VRAM but must transfer the residual back to the GPU and may be slower.",
+        "options": {
+          "auto": "Auto · Recommended",
+          "gpu": "GPU · Fastest",
+          "cpu": "CPU · Save VRAM"
+        }
+      },
+      "vram_reserve_gb": {
+        "name": "VRAM Reserve (GB)",
+        "tooltip": "VRAM that auto mode must leave available for model weights, activations, CUDA workspace, and VAE. Default: 2.0 GB; range: 0.5–16.0 GB; step: 0.5 GB. Increase this after out-of-memory errors; reduce it only when VRAM is plentiful. This setting does not change physical VRAM or GPU power."
+      },
+      "ram_reserve_gb": {
+        "name": "System RAM Reserve (GB)",
+        "tooltip": "System memory that auto mode must leave available before choosing CPU cache. Default: 4.0 GB; range: 1.0–32.0 GB; step: 1.0 GB. Increase it when memory is tight, other applications are running, or you want to avoid paging."
+      },
+      "signature_tokens": {
+        "name": "Signature Tokens",
+        "tooltip": "Number of sampled audio/video hidden-state positions used for change detection. Default: 128; range: 32–512; step: 32. Higher values inspect more positions but add a small detection cost; values that are too low may miss changes. This does not alter output resolution or frame count. Keep 128 unless testing."
+      },
+      "signature_features": {
+        "name": "Signature Features",
+        "tooltip": "Hidden feature channels sampled at each signature position. Default: 64; range: 16–256; step: 16. Higher values make change detection more detailed with a small overhead; values that are too low can reduce reliability. This does not change model precision. Keep 64 unless testing."
+      },
+      "verbose": {
+        "name": "Detailed Cache Log",
+        "tooltip": "Print RUN/SKIP decisions for every step and a final summary with skipped passes, cache location, and estimated speedup. Default: off (False). Enable for the first comparison or troubleshooting; disable for routine use to reduce log noise."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Accelerated Model",
+        "tooltip": "MiniMax H3 MODEL with the safe residual-cache policy applied. Connect it to the sampler in place of the original MODEL link."
+      }
+    }
+  }
+}
