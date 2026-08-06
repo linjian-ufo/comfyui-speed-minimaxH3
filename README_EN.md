@@ -15,6 +15,21 @@ A safety-focused ComfyUI acceleration package for MiniMax H3. It enables SageAtt
 
 > The screenshot uses forced `enabled` mode for confirmation. For normal use, keep the recommended `auto` default for acceleration with compatibility fallback.
 
+## Core upgrade: MiniMax H3 Text Encoder Cache
+
+The new standalone `MiniMax H3 Text Encoder Cache` node accelerates repeated MiniMax H3 prompt and reference-image encoding:
+
+```text
+CLIPLoader (type=minimax)
+    → MiniMax H3 Text Encoder Cache
+    → MiniMax H3 image-to-video / reference-to-video node
+```
+
+- Encoding cache is enabled by default and stores up to `2` results by default.
+- The first new prompt, reference-image set, or encoding configuration still runs the complete 32B text encoder to preserve correctness.
+- Later runs with exactly the same prompt, reference images, and encoding options reuse the CPU-cached result instead of repeating the expensive text encode.
+- Any change to the prompt, reference images, or encoding options automatically triggers a fresh encode, preventing stale-result reuse.
+
 > [!IMPORTANT]
 > **Important controls are marked with `★`: reuse threshold, acceleration window, maximum consecutive skips, and SageAttention.** They directly affect speed and quality. Hover over an input label or its help icon to see its purpose, default, range, step size, trade-offs, and recommended values.
 
