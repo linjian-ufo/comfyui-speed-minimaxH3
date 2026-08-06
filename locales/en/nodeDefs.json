@@ -1,7 +1,7 @@
 {
   "MiniMaxH3SpeedCache": {
     "display_name": "⚡ MiniMax H3 Speed Cache · Safe",
-    "description": "Safe residual-cache acceleration for MiniMax H3. Uses tested defaults, automatically manages GPU/CPU cache storage, and never changes GPU clocks, power limits, voltage, or fan settings.",
+    "description": "Dedicated SageAttention and safe residual-cache acceleration for MiniMax H3, with automatic fallback to ComfyUI's default attention backend.",
     "inputs": {
       "model": {
         "name": "MiniMax H3 Model",
@@ -32,6 +32,15 @@
           "cpu": "CPU · Save VRAM"
         }
       },
+      "sage_attention": {
+        "name": "★ Automatic SageAttention",
+        "tooltip": "Default auto: use SageAttention for the MiniMax H3 diffusion model when available, with automatic fallback to ComfyUI's default attention backend and no separate Sage node required. enabled requires SageAttention and raises an error if unavailable. disabled leaves attention unchanged.",
+        "options": {
+          "auto": "Auto · Recommended",
+          "enabled": "Force Enabled",
+          "disabled": "Disabled"
+        }
+      },
       "vram_reserve_gb": {
         "name": "VRAM Reserve (GB)",
         "tooltip": "VRAM that auto mode must leave available for model weights, activations, CUDA workspace, and VAE. Default: 2.0 GB; range: 0.5–16.0 GB; step: 0.5 GB. Increase this after out-of-memory errors; reduce it only when VRAM is plentiful. This setting does not change physical VRAM or GPU power."
@@ -57,6 +66,34 @@
       "0": {
         "name": "Accelerated Model",
         "tooltip": "MiniMax H3 MODEL with the safe residual-cache policy applied. Connect it to the sampler in place of the original MODEL link."
+      }
+    }
+  },
+  "MiniMaxH3TextEncoderCache": {
+    "display_name": "⚡ MiniMax H3 Text Encoder Cache",
+    "description": "Cache identical prompt and reference-image conditioning to avoid repeatedly running the 32B MiniMax H3 text encoder. The first encode still performs full computation.",
+    "inputs": {
+      "clip": {
+        "name": "MiniMax H3 Text Encoder",
+        "tooltip": "Purpose: connect a CLIPLoader configured with type minimax and add exact-result caching. Only the MiniMax H3 Qwen3-VL 32B text encoder is accepted. This connection has no default, numeric bounds, or step size."
+      },
+      "cache_enabled": {
+        "name": "Enable Encoding Cache",
+        "tooltip": "Purpose: control prompt/reference encoding caching. Default: enabled; choices are enabled or disabled, with no numeric bounds or step size. Identical content is reused; any change triggers a normal full encode."
+      },
+      "max_cache_entries": {
+        "name": "Maximum Cache Entries",
+        "tooltip": "Purpose: limit retained encoding results. Default 2; minimum 1; maximum 8; step 1. Results are stored in system RAM. Higher values make switching between prompts faster but use more memory."
+      },
+      "verbose": {
+        "name": "Detailed Text Cache Log",
+        "tooltip": "Purpose: print text-cache HIT and MISS messages. Default: disabled; choices are enabled or disabled, with no numeric bounds or step size. Enable for diagnosis and leave disabled for normal use."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Cached Text Encoder",
+        "tooltip": "Connect this to the MiniMax H3 conditioning node in place of the original CLIPLoader output."
       }
     }
   }

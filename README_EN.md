@@ -2,17 +2,30 @@
 
 [简体中文](README.md) | **English**
 
-A safety-focused ComfyUI cache acceleration node for MiniMax H3. It reuses the full Transformer residual when adjacent sampling steps change only slightly, reducing repeated computation while providing GPU/RAM budgeting, automatic CPU fallback, repeated-sigma isolation, and cache-conflict detection.
+A safety-focused ComfyUI acceleration package for MiniMax H3. It enables SageAttention for the diffusion model by default, reuses the full Transformer residual when adjacent sampling steps change only slightly, and can cache identical prompt/reference-image encodings while providing GPU/RAM budgeting, automatic CPU fallback, repeated-sigma isolation, and conflict detection.
+
+## Core upgrade: dedicated SageAttention for MiniMax H3
+
+- Provides a dedicated attention override for `MiniMaxH3Model`, with no separate third-party SageAttention node required.
+- Defaults to `sage_attention=auto`, enabling SageAttention whenever the current ComfyUI and Python environment support it.
+- If the installed ComfyUI or SageAttention package cannot provide the backend, the node automatically falls back to ComfyUI's default attention backend so generation can continue safely.
+- If the workflow already supplies another attention override, `auto` preserves it instead of overwriting it.
+
+![MiniMax H3 dedicated SageAttention and safe cache UI](assets/minimax-h3-sageattention-ui.png)
+
+> The screenshot uses forced `enabled` mode for confirmation. For normal use, keep the recommended `auto` default for acceleration with compatibility fallback.
 
 > [!IMPORTANT]
-> **The three most important controls are marked with `★` in the node: reuse threshold, acceleration window, and maximum consecutive skips.** They directly affect speed and quality. Hover over an input label or its help icon to see its purpose, default, range, step size, trade-offs, and recommended values.
+> **Important controls are marked with `★`: reuse threshold, acceleration window, maximum consecutive skips, and SageAttention.** They directly affect speed and quality. Hover over an input label or its help icon to see its purpose, default, range, step size, trade-offs, and recommended values.
 
 > [!WARNING]
 > This node supports `MiniMaxH3Model` only. Do not chain it with EasyCache, `TE-Speed-MiniMaxH3`, `ComfyUI-MiniMaxH3-Cache`, or another full-model/full-block cache node.
 
 ## Highlights
 
+- `sage_attention=auto` detects and enables ComfyUI's installed SageAttention implementation by default, with safe native fallback and no separate Sage node required.
 - Defaults tested during continuous long-video generation: threshold `0.12`, window `10%–90%`, and at most `2` consecutive skips.
+- Includes a separate `MiniMax H3 Text Encoder Cache` node: the first encode is complete, while later identical prompts, reference images, and encoding options reuse a CPU cache.
 - Stores only a small sampled feature signature for change detection instead of cloning the entire hidden state for the signature.
 - `auto` selects GPU, CPU, or disables caching for the current step from actual free memory and configured reserves.
 - Can fall back to CPU storage after a CUDA allocation failure, reducing the chance of an immediate OOM failure.
@@ -56,6 +69,10 @@ The node is also available under `MiniMaxH3 → optimization`.
 4. Start with the defaults. Enable `verbose` for the first run to inspect `RUN/SKIP` statistics in the console.
 5. Compare against a no-cache result with the same prompt, seed, resolution, and step count before tuning.
 
+The model node defaults to `sage_attention=auto`; a separate `PathchSageAttentionKJ` node is no longer necessary. If an existing workflow already supplies another attention override, `auto` preserves it instead of overwriting it.
+
+To accelerate repeated text encoding, place `MiniMax H3 Text Encoder Cache` after `CLIPLoader (type=minimax)` and connect its `CLIP` output to the MiniMax H3 image/reference-to-video node. The first encode still runs in full; reuse occurs only when the prompt, reference images, and encoding options are identical.
+
 If hover help does not appear, update the ComfyUI frontend and press `Ctrl+F5`. English UI uses `locales/en`; Simplified Chinese UI uses `locales/zh`.
 
 ## Default profile
@@ -73,6 +90,7 @@ ram_reserve_gb           4.0
 signature_tokens         128
 signature_features       64
 verbose                  false
+sage_attention           auto
 ```
 
 ## Parameter reference
@@ -89,6 +107,7 @@ verbose                  false
 | `signature_tokens` | 128 | 32–512, step 32 | Number of sampled hidden-state positions. The default is normally enough; increasing it adds a small detection cost. |
 | `signature_features` | 64 | 16–256, step 16 | Feature channels inspected at each sampled position. Values that are too low may reduce detection reliability. |
 | `verbose` | false | true / false | Logs each `RUN/SKIP` decision and final statistics. Enable for initial testing or troubleshooting. |
+| **★ `sage_attention`** | **auto** | auto / enabled / disabled | `auto` enables SageAttention when available and falls back to ComfyUI's default attention backend otherwise; `enabled` requires it; `disabled` leaves attention unchanged. |
 
 ## Alternative profiles
 
@@ -124,6 +143,7 @@ This node does not control GPU hardware and does not bypass NVIDIA temperature o
 - Reuses native `block_loop` support when available in newer ComfyUI versions.
 - Raises a clear upgrade error when an older ComfyUI version has no `MiniMaxH3Model`.
 - Does not support other video models, image models, or text-encoder models.
+- On the current Torch 2.6/CUDA 12.6 stack, ComfyUI falls back to native PyTorch for the causal-mask attention used by the MiniMax text encoder. The text node therefore uses exact-result caching and does not claim to accelerate the first encode with SageAttention.
 
 ## Troubleshooting
 
@@ -145,6 +165,14 @@ Keep `cache_device=auto` and increase `vram_reserve_gb`. If memory is still insu
 ### Faster output but visible quality changes
 
 Lower `reuse_threshold`, set `max_consecutive_skips` to `1`, and narrow the window between `start_percent` and `end_percent`.
+
+### Is SageAttention actually active?
+
+Keep `sage_attention=auto`. The runtime log should contain `MiniMax H3 attention backend: sage-enabled`. If it says `native-fallback`, the node has safely fallen back to ComfyUI's default attention backend; generation can continue, or you can check whether SageAttention is installed in ComfyUI's Python environment. `enabled` raises an explicit error when unavailable and is useful for diagnosis.
+
+### Why is the first text encode still slow?
+
+The 32B text encoder must load and compute a new prompt/reference set once. The node reports a `MISS` on that first calculation and a `HIT` for later identical content. Changing any prompt, reference image, or encoding option triggers a correct full re-encode.
 
 ## Is the tests folder required?
 
