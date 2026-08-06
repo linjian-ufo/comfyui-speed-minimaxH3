@@ -1,7 +1,7 @@
 {
   "MiniMaxH3SpeedCache": {
     "display_name": "⚡ MiniMax H3 加速缓存 · 安全版",
-    "description": "MiniMax H3 专用的安全残差缓存加速节点。默认参数经过长视频测试，可自动管理 GPU/CPU 缓存，并且不会修改显卡频率、功耗、电压或风扇设置。",
+    "description": "MiniMax H3 专用 SageAttention 与安全残差缓存加速；不支持 SageAttention 时自动回退到 ComfyUI 默认注意力后端。",
     "inputs": {
       "model": {
         "name": "MiniMax H3 模型",
@@ -32,6 +32,15 @@
           "cpu": "CPU · 节省显存"
         }
       },
+      "sage_attention": {
+        "name": "★ SageAttention 自动加速",
+        "tooltip": "默认 auto：检测到 SageAttention 时自动用于 MiniMax H3 扩散模型，不再需要外接 Sage 节点；不可用时安全回退到 ComfyUI 默认注意力后端。enabled：必须启用，否则报错。disabled：不由本节点设置。",
+        "options": {
+          "auto": "自动 · 推荐",
+          "enabled": "强制启用",
+          "disabled": "关闭"
+        }
+      },
       "vram_reserve_gb": {
         "name": "显存预留量（GB）",
         "tooltip": "auto 模式至少为模型权重、激活张量、CUDA 工作区和 VAE 保留的显存。默认值：2.0 GB；范围：0.5–16.0 GB；步长：0.5 GB。出现显存不足时应调高；只有显存非常充足时才考虑调低。该参数不会修改物理显存或显卡功耗。"
@@ -57,6 +66,34 @@
       "0": {
         "name": "加速后的模型",
         "tooltip": "已应用安全残差缓存策略的 MiniMax H3 MODEL。用它替换原来的 MODEL 连线并连接到采样器。"
+      }
+    }
+  },
+  "MiniMaxH3TextEncoderCache": {
+    "display_name": "⚡ MiniMax H3 文本编码缓存",
+    "description": "缓存完全相同的提示词与参考图编码结果，避免重复运行 32B MiniMax H3 文本编码器。首次编码仍会完整计算。",
+    "inputs": {
+      "clip": {
+        "name": "MiniMax H3 文本编码器",
+        "tooltip": "作用：连接类型为 minimax 的 CLIPLoader 输出并添加精确结果缓存。仅支持 MiniMax H3 Qwen3-VL 32B 文本编码器；没有默认连接、数值范围或调节步长。"
+      },
+      "cache_enabled": {
+        "name": "启用文本编码缓存",
+        "tooltip": "作用：控制是否缓存文本与参考图编码。默认开启；可选开启或关闭，没有数值范围和调节步长。开启后完全相同的提示词、参考图和编码参数直接复用；任意内容变化都会正常重新编码。"
+      },
+      "max_cache_entries": {
+        "name": "最大缓存数量",
+        "tooltip": "作用：限制最多保留多少组编码结果。默认 2，下限 1，上限 8，步长 1。缓存在 CPU 内存中；数值越大越方便切换提示词，但占用更多内存。"
+      },
+      "verbose": {
+        "name": "详细文本缓存日志",
+        "tooltip": "作用：显示缓存 HIT（命中）和 MISS（未命中）。默认关闭；可选开启或关闭，没有数值范围和调节步长。排错时开启，日常使用保持关闭。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "带缓存的文本编码器",
+        "tooltip": "连接到原本使用 CLIPLoader 输出的 MiniMax H3 条件节点。"
       }
     }
   }

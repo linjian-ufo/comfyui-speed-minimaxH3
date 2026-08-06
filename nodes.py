@@ -10,6 +10,7 @@ import torch
 import comfy.model_management
 import comfy.patcher_extension
 
+from .attention import make_sage_attention_override
 from .minimax_patch import ensure_minimax_h3_block_loop_support
 
 
@@ -339,7 +340,8 @@ class MiniMaxH3SpeedCache:
     """MiniMax H3 transformer cache with safe memory fallback."""
 
     DESCRIPTION = (
-        "MiniMax H3 专用缓存加速 / Cache acceleration for MiniMax H3. "
+        "MiniMax H3 专用 SageAttention 与缓存加速 / Dedicated SageAttention "
+        "and cache acceleration for MiniMax H3. "
         "默认采用实测速度与画质兼顾参数；不会修改显卡频率、功耗或风扇设置。 "
         "Uses a tested speed/quality profile and never changes GPU clocks, "
         "power limits, voltage, or fan settings."
@@ -517,6 +519,20 @@ class MiniMaxH3SpeedCache:
                         ),
                     },
                 ),
+                # Keep new widgets after every legacy widget. ComfyUI stores
+                # widget values by position, so inserting this in the middle
+                # would shift old workflow values into the wrong controls.
+                "sage_attention": (
+                    ["auto", "enabled", "disabled"],
+                    {
+                        "default": "auto",
+                        "tooltip": (
+                            "MiniMax H3 扩散模型注意力后端。默认 auto：检测到 SageAttention "
+                            "便自动启用；不可用时安全回退到 ComfyUI 默认注意力后端；enabled：要求"
+                            "必须启用，失败时明确报错；disabled：不由本节点设置注意力后端。"
+                        ),
+                    },
+                ),
             },
         }
 
@@ -546,7 +562,15 @@ class MiniMaxH3SpeedCache:
         signature_tokens: int = 128,
         signature_features: int = 64,
         verbose: bool = False,
+        sage_attention: str = "auto",
     ) -> tuple[Any]:
+        if sage_attention not in {"auto", "enabled", "disabled"}:
+            LOGGER.warning(
+                "MiniMax H3 repaired an invalid legacy SageAttention widget value %r to auto.",
+                sage_attention,
+            )
+            sage_attention = "auto"
+
         diffusion_model = self._get_diffusion_model(model)
         if diffusion_model is None or diffusion_model.__class__.__name__ != "MiniMaxH3Model":
             actual = type(diffusion_model).__name__ if diffusion_model is not None else "None"
@@ -567,6 +591,18 @@ class MiniMaxH3SpeedCache:
             raise RuntimeError(
                 "检测到已有 MiniMax H3 / EasyCache block_loop 缓存。请不要串联多个缓存节点。"
             )
+
+        attention_status = "disabled"
+        existing_attention = transformer_options.get("optimized_attention_override")
+        if sage_attention == "auto" and existing_attention is not None:
+            attention_status = "existing-external-override"
+        elif sage_attention != "disabled":
+            attention_override, attention_status = make_sage_attention_override(
+                required=sage_attention == "enabled"
+            )
+            if attention_override is not None:
+                transformer_options["optimized_attention_override"] = attention_override
+        LOGGER.info("MiniMax H3 attention backend: %s", attention_status)
 
         cache = MiniMaxH3CacheController(
             reuse_threshold=reuse_threshold,
