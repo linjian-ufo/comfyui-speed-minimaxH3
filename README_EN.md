@@ -4,7 +4,16 @@
 
 A safety-focused ComfyUI acceleration package for MiniMax H3. It enables SageAttention for the diffusion model by default, reuses the full Transformer residual when adjacent sampling steps change only slightly, and can cache identical prompt/reference-image encodings while providing GPU/RAM budgeting, automatic CPU fallback, repeated-sigma isolation, and conflict detection.
 
-## Core upgrade: dedicated SageAttention for MiniMax H3
+## ★ What's new in this release
+
+- **★ Dedicated SageAttention for MiniMax H3**: `auto` detection is the default for the diffusion model, enabling the backend when compatible and falling back safely when it is not.
+- **★ MiniMax H3 Text Encoder Cache**: identical prompts, reference images, and encoding options can reuse a CPU cache instead of repeatedly running the 32B text encoder.
+- **★ linjian Image to Video subgraph**: replaces the built-in UNet combo with a `MODEL` socket for the accelerated model and exposes sampling steps, cache device, and logging controls.
+- **★ linjian Reference to Video node**: supports reference images, reference video, video soundtrack, and standalone reference audio with automatic QwenVL SageAttention adaptation.
+
+Headings and items marked with **★** are new or substantially upgraded compared with the previous GitHub release. Existing node identifiers remain unchanged so saved workflows continue to load.
+
+## ★ Core upgrade: dedicated SageAttention for MiniMax H3
 
 - Provides a dedicated attention override for `MiniMaxH3Model`, with no separate third-party SageAttention node required.
 - Defaults to `sage_attention=auto`, enabling SageAttention whenever the current ComfyUI and Python environment support it.
@@ -15,7 +24,7 @@ A safety-focused ComfyUI acceleration package for MiniMax H3. It enables SageAtt
 
 > The screenshot uses forced `enabled` mode for confirmation. For normal use, keep the recommended `auto` default for acceleration with compatibility fallback.
 
-## Core upgrade: MiniMax H3 Text Encoder Cache
+## ★ Core upgrade: MiniMax H3 Text Encoder Cache
 
 The new standalone `MiniMax H3 Text Encoder Cache` node accelerates repeated MiniMax H3 prompt and reference-image encoding:
 
@@ -29,6 +38,44 @@ CLIPLoader (type=minimax)
 - The first new prompt, reference-image set, or encoding configuration still runs the complete 32B text encoder to preserve correctness.
 - Later runs with exactly the same prompt, reference images, and encoding options reuse the CPU-cached result instead of repeating the expensive text encode.
 - Any change to the prompt, reference images, or encoding options automatically triggers a fresh encode, preventing stale-result reuse.
+
+## ★ New: linjian Image to Video (MiniMax H3) subgraph
+
+Search for `linjian Image to Video (MiniMax H3)` in the node list. Adding it creates a native subgraph with the same UI and internal flow as ComfyUI's built-in image-to-video subgraph. The only intentional difference is that the original `unet_name` model combo is a `MODEL` socket.
+
+```text
+UNETLoader
+    → MiniMax H3 Speed Cache (Safe)
+    → linjian Image to Video (MiniMax H3) / unet_name
+```
+
+The accelerated model feeds both the scheduler and guider inside the subgraph, so the subgraph does not load a second UNet. The first/last frames, prompt, dimensions, duration, sampling `steps`, seed, `cache_device`, `verbose`, text encoder, video VAE, audio VAE, and `VIDEO` output retain the native subgraph structure.
+
+- `steps` defaults to `20` and directly controls the internal `BasicScheduler`.
+- `cache_device` defaults to `auto` and overrides cache storage on the externally patched model for this run; `gpu` is usually faster but uses more VRAM, while `cpu` saves VRAM but can add transfer time.
+- `verbose` defaults to off and overrides the external speed-cache logging switch for this run.
+- These two options update the existing `MiniMax H3 Speed Cache` controller instead of stacking another `block_loop` cache. Therefore `unet_name` must receive the speed-cache output, not a raw `UNETLoader` model.
+- Saved workflows containing the older linjian subgraph are upgraded automatically while preserving position, existing values, and external links; the three new controls receive the defaults above.
+
+Every input on both linjian nodes has detailed hover help covering purpose, default, bounds/options, step size, and tuning impact.
+
+The subgraph also routes its internal QwenVL CLIP through `MiniMax H3 Text Encoder Cache` with `sage_attention=auto`. This activates the SageAttention 2.1.1 QwenVL adapter when compatible and safely falls back to PyTorch otherwise; no extra text-cache node is required outside this subgraph.
+
+## ★ New: linjian Reference to Video (MiniMax H3)
+
+Search for `linjian Reference to Video (MiniMax H3)`. It uses the same reference-media conditioning logic as ComfyUI's built-in `MiniMax H3 Reference to Video`, with the screenshot layout expanded by default: three reference-image sockets, one reference-video socket, one matching video-soundtrack socket, and one standalone-audio socket.
+
+```text
+CLIPLoader (type=minimax) ─────────────→ clip
+VAELoader (MiniMax H3 video VAE) ─────→ vae
+VAELoader (MiniMax H3 audio VAE) ─────→ audio_vae
+Load Image / Load Video / Load Audio ─→ matching ref_* sockets
+
+positive ─→ sampler positive conditioning
+Latent   ─→ sampler latent_image
+```
+
+Use `<Picture 1>`, `<Video 1>`, and `<Audio 1>` in the prompt to refer to connected media. The node internally wraps QwenVL encoding with `sage_attention=auto`: the SageAttention 2.1.1 interface is used when compatible and safely falls back for unsupported masks, CPU execution, or kernel errors. No extra Sage control is added, preserving the requested UI.
 
 > [!IMPORTANT]
 > **Important controls are marked with `★`: reuse threshold, acceleration window, maximum consecutive skips, and SageAttention.** They directly affect speed and quality. Hover over an input label or its help icon to see its purpose, default, range, step size, trade-offs, and recommended values.
@@ -49,6 +96,7 @@ CLIPLoader (type=minimax)
 - Never overwrites ComfyUI core files on disk; older ComfyUI versions receive an in-memory compatibility hook only.
 - Does not call NVML or `nvidia-smi` and never changes GPU clocks, power limits, voltage, or fan settings.
 - Includes native English and Simplified Chinese UI names and hover tooltips.
+- Includes `linjian Reference to Video (MiniMax H3)` with built-in-compatible logic and the screenshot's reference sockets expanded by default.
 
 ## Installation
 
@@ -158,7 +206,7 @@ This node does not control GPU hardware and does not bypass NVIDIA temperature o
 - Reuses native `block_loop` support when available in newer ComfyUI versions.
 - Raises a clear upgrade error when an older ComfyUI version has no `MiniMaxH3Model`.
 - Does not support other video models, image models, or text-encoder models.
-- On the current Torch 2.6/CUDA 12.6 stack, ComfyUI falls back to native PyTorch for the causal-mask attention used by the MiniMax text encoder. The text node therefore uses exact-result caching and does not claim to accelerate the first encode with SageAttention.
+- The QwenVL HND kernels required for 72/128 head dimensions, unmasked attention, and causal attention were validated locally with `SageAttention 2.1.1+cu126torch2.6.0`. Vision and pure causal text attention can use Sage; unsupported masks, CPU paths, or kernel failures fall back to PyTorch.
 
 ## Troubleshooting
 

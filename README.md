@@ -4,7 +4,16 @@
 
 MiniMax H3 专用的 ComfyUI 安全加速节点。它默认自动为扩散模型启用 SageAttention，在相邻采样步骤变化较小时复用整段 Transformer 残差，并可缓存完全相同的提示词与参考图编码结果；同时提供显存/内存预算、CPU 自动降级、重复 sigma 隔离和缓存冲突检测。
 
-## 核心升级：MiniMax H3 专用 SageAttention
+## ★ 本次新增功能
+
+- **★ MiniMax H3 专用 SageAttention**：扩散模型默认使用 `auto` 自动检测，兼容时启用，不兼容时安全回退。
+- **★ MiniMax H3 文本编码缓存**：完全相同的提示词、参考图和编码参数可复用 CPU 缓存，减少重复运行 32B 文本编码器。
+- **★ linjian Image to Video 子图**：将内置子图的模型下拉框改为 `MODEL` 接口，可直接接入本插件的加速模型，并提供采样步数、缓存设备和日志控制。
+- **★ linjian Reference to Video 节点**：支持参考图、参考视频、视频音轨和独立参考音频，内部自动适配 QwenVL SageAttention。
+
+本说明中带 **★** 的标题和项目均为相对上一版 GitHub 仓库新增或显著升级的功能；原有节点标识保持不变，避免影响已经保存的工作流。
+
+## ★ 核心升级：MiniMax H3 专用 SageAttention
 
 - 为 `MiniMaxH3Model` 提供专用注意力覆盖，不需要再额外串联第三方 SageAttention 节点。
 - 默认 `sage_attention=auto`：当前 ComfyUI 和 Python 环境支持 SageAttention 时自动启用。
@@ -15,7 +24,7 @@ MiniMax H3 专用的 ComfyUI 安全加速节点。它默认自动为扩散模型
 
 > 截图使用 `enabled` 强制启用模式进行确认；日常使用推荐保持默认 `auto`，兼顾加速与兼容性。
 
-## 核心升级：MiniMax H3 文本编码缓存
+## ★ 核心升级：MiniMax H3 文本编码缓存
 
 新增独立节点 `MiniMax H3 Text Encoder Cache`，用于加速重复的 MiniMax H3 提示词和参考图编码：
 
@@ -29,6 +38,44 @@ CLIPLoader（type=minimax）
 - 第一次遇到新的提示词、参考图或编码参数时，仍会运行完整的 32B 文本编码器，保证结果正确。
 - 当提示词、参考图和编码参数完全相同时，后续运行会直接复用 CPU 内存中的编码结果，避免再次执行耗时的文本编码。
 - 任意提示词、参考图或编码参数发生变化时会自动重新编码，不会错误复用旧结果。
+
+## ★ 新增：linjian Image to Video (MiniMax H3) 子图
+
+节点列表中搜索 `linjian Image to Video (MiniMax H3)`。添加后会生成与 ComfyUI 内置图生视频节点相同的原生子图和界面；区别只有一处：原来的 `unet_name` 模型下拉框改为 `MODEL` 接口。
+
+```text
+UNETLoader
+    → MiniMax H3 Speed Cache (Safe)
+    → linjian Image to Video (MiniMax H3) 的 unet_name
+```
+
+这样加速后的模型会同时送入子图内部的调度器和引导器，内部不会再次加载一份 UNet。`first_frame`、`last_frame`、提示词、宽高、时长、采样 `steps`、种子、`cache_device`、`verbose`、文本编码器、视频 VAE、音频 VAE 和 `VIDEO` 输出均保持原生子图结构。
+
+- `steps` 默认 `20`，会直接控制内部 `BasicScheduler`，并非装饰参数。
+- `cache_device` 默认 `auto`，可在本节点上覆盖外接加速节点的缓存位置；`gpu` 通常快但更占显存，`cpu` 更省显存但传输可能变慢。
+- `verbose` 默认关闭，可在本节点上覆盖外接加速节点的运行日志开关。
+- 这两个缓存选项只修改已经存在的 `MiniMax H3 Speed Cache` 控制器，不会叠加第二个 `block_loop` 缓存；因此 `unet_name` 必须接加速节点输出，不能直接接原始 `UNETLoader`。
+- 旧工作流加载时会自动升级旧版 linjian 子图，保留原位置、原参数和外部连线；三个新增参数使用上述默认值。
+
+两个 linjian 节点的每一个输入都提供详细中文鼠标悬停说明，包括作用、默认值、范围/选项、步长和调节影响。
+
+子图内部还会让 QwenVL CLIP 自动经过 `MiniMax H3 Text Encoder Cache`，并使用 `sage_attention=auto`：兼容时启用 SageAttention 2.1.1 的 QwenVL 专用接口，不兼容时安全回退到 PyTorch，因此无需在子图外再串联文本编码缓存节点。
+
+## ★ 新增：linjian Reference to Video (MiniMax H3)
+
+节点列表中搜索 `linjian Reference to Video (MiniMax H3)`。它与内置 `MiniMax H3 Reference to Video` 使用相同的参考素材处理逻辑，界面默认展开为截图中的接口：3 个参考图、1 个参考视频、1 个参考视频音轨和 1 个独立参考音频。
+
+```text
+CLIPLoader（type=minimax） ─────────────→ clip
+VAELoader（MiniMax H3 video VAE） ────→ vae
+VAELoader（MiniMax H3 audio VAE） ────→ audio_vae
+Load Image / Load Video / Load Audio ─→ 对应的 ref_* 接口
+
+positive ─→ 采样器使用的正向条件
+Latent   ─→ 采样器的 latent_image
+```
+
+提示词中用 `<Picture 1>`、`<Video 1>`、`<Audio 1>` 引用已连接素材。节点内部固定使用 `sage_attention=auto` 包装 QwenVL 编码：SageAttention 2.1.1 接口兼容时自动启用，不兼容遮罩、CPU 路径或内核异常时安全回退；为保持与截图相同的界面，不增加额外的 Sage 控件。
 
 > [!IMPORTANT]
 > **重要参数在节点里以 `★` 标记：缓存复用阈值、加速区间、最大连续跳步数和 SageAttention。** 这些参数直接影响速度和画质。鼠标悬停在参数名称或帮助图标上，可查看作用、默认值、范围、步长、调高/调低的影响与建议值。
@@ -49,6 +96,7 @@ CLIPLoader（type=minimax）
 - 不覆盖磁盘上的 ComfyUI 核心文件；旧版 ComfyUI 仅在运行内存中安装兼容钩子。
 - 不调用 NVML 或 `nvidia-smi`，不修改显卡频率、功耗、电压或风扇。
 - 支持 ComfyUI 原生中英文界面翻译和双语悬停说明。
+- 提供与内置参考条件节点同逻辑、按截图预展开接口的 `linjian Reference to Video (MiniMax H3)`。
 
 ## 安装
 
@@ -158,7 +206,7 @@ cache_device             auto
 - 新版 ComfyUI 如果原生提供 `block_loop` 接口，会直接复用。
 - 旧版 ComfyUI 没有 `MiniMaxH3Model` 时会明确报错并要求升级。
 - 不支持其他视频模型、图片模型或文本编码器模型。
-- 当前 Torch 2.6/CUDA 12.6 环境中，MiniMax 文本编码器带因果遮罩的注意力会由 ComfyUI 回退到原生 PyTorch；因此文本节点采用“精确结果缓存”，不会伪称首次编码也由 SageAttention 加速。
+- 已在本机 `SageAttention 2.1.1+cu126torch2.6.0` 上验证 QwenVL 所需的 HND、72/128 head-dim、普通和因果内核接口。视觉塔与纯因果文本注意力可使用 Sage；不兼容遮罩、CPU 路径或内核异常会回退到 PyTorch。
 
 ## 常见问题
 

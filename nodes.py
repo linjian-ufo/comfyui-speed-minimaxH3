@@ -629,4 +629,107 @@ class MiniMaxH3SpeedCache:
         return (patched_model,)
 
 
-__all__ = ["MiniMaxH3SpeedCache", "MiniMaxH3CacheController"]
+class MiniMaxH3CacheRuntimeOptions:
+    """Override safe runtime-only settings on an already patched cache model."""
+
+    DESCRIPTION = (
+        "供 linjian Image to Video 子图内部使用：覆盖外接 MiniMax H3 Speed Cache "
+        "模型的缓存设备和详细日志开关，不会叠加第二套 block_loop 缓存。"
+    )
+    CATEGORY = "MiniMaxH3/internal"
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    OUTPUT_TOOLTIPS = (
+        "保持原加速策略、但已应用子图 cache_device 与 verbose 设置的 MiniMax H3 MODEL。",
+    )
+    FUNCTION = "apply"
+
+    @classmethod
+    def INPUT_TYPES(cls) -> dict[str, Any]:
+        return {
+            "required": {
+                "model": (
+                    "MODEL",
+                    {
+                        "tooltip": (
+                            "作用：接收已经经过 MiniMax H3 Speed Cache (Safe) 的 MODEL。"
+                            "该连接没有默认值、数值范围或步长；若直接连接原始 UNET，节点会"
+                            "明确报错，避免界面参数看似生效但实际没有缓存。"
+                        )
+                    },
+                ),
+                "cache_device": (
+                    ["auto", "gpu", "cpu"],
+                    {
+                        "default": "auto",
+                        "tooltip": (
+                            "作用：覆盖外接加速节点本次运行的缓存位置。默认 auto；可选 auto、"
+                            "gpu、cpu，没有数值范围或步长。auto 根据实际可用显存、内存和预留"
+                            "空间选择，推荐；gpu 通常最快但更占显存；cpu 更省显存，但每次复用"
+                            "可能需要同步传回显卡，长视频时可能变慢。"
+                        ),
+                    },
+                ),
+                "verbose": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "作用：覆盖外接加速节点的详细日志开关。默认关闭（False）；可选"
+                            "开启或关闭，没有数值范围或步长。开启后控制台会打印 RUN/SKIP、"
+                            "缓存设备、跳步数量和估算加速比；首次测速或排错建议开启，日常可关闭。"
+                        ),
+                    },
+                ),
+            }
+        }
+
+    @staticmethod
+    def _controller(model: Any) -> MiniMaxH3CacheController | None:
+        transformer_options = getattr(model, "model_options", {}).get(
+            "transformer_options", {}
+        )
+        controller = (
+            transformer_options.get("patches_replace", {})
+            .get("dit", {})
+            .get(("block_loop", 0))
+        )
+        if isinstance(controller, MiniMaxH3CacheController):
+            return controller
+        return None
+
+    def apply(
+        self,
+        model: Any,
+        cache_device: str = "auto",
+        verbose: bool = False,
+    ) -> tuple[Any]:
+        if cache_device not in {"auto", "gpu", "cpu"}:
+            LOGGER.warning(
+                "MiniMax H3 repaired an invalid subgraph cache_device %r to auto.",
+                cache_device,
+            )
+            cache_device = "auto"
+
+        controller = self._controller(model)
+        if controller is None:
+            raise RuntimeError(
+                "linjian Image to Video 的 unet_name 必须连接 MiniMax H3 Speed Cache "
+                "(Safe) 输出，不能直接连接原始 UNETLoader。"
+            )
+
+        controller.cache_device = cache_device
+        controller.verbose = bool(verbose)
+        if verbose:
+            LOGGER.info(
+                "MiniMax H3 subgraph runtime options: cache_device=%s verbose=true",
+                cache_device,
+            )
+        return (model,)
+
+
+__all__ = [
+    "MiniMaxH3SpeedCache",
+    "MiniMaxH3CacheController",
+    "MiniMaxH3CacheRuntimeOptions",
+]

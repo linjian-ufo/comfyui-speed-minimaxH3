@@ -69,6 +69,18 @@
       }
     }
   },
+  "MiniMaxH3CacheRuntimeOptions": {
+    "display_name": "MiniMax H3 Subgraph Cache Runtime Options",
+    "description": "Overrides cache device and logging on an existing MiniMax H3 Speed Cache model without stacking a second cache.",
+    "inputs": {
+      "model": {"name": "Accelerated Model", "tooltip": "Purpose: receive a MODEL already patched by MiniMax H3 Speed Cache (Safe). No default, numeric bounds, or step. Connecting a raw UNETLoader model produces a clear error."},
+      "cache_device": {"name": "Cache Device", "tooltip": "Purpose: override cache storage for this run. Default auto; choices auto, gpu, or cpu; no numeric step. auto is recommended; gpu is usually fastest but uses VRAM; cpu saves VRAM but transfer can be slower.", "options": {"auto": "Auto · Recommended", "gpu": "GPU · Fastest", "cpu": "CPU · Save VRAM"}},
+      "verbose": {"name": "Detailed Cache Log", "tooltip": "Purpose: override detailed logging for this run. Default off; choices on or off; no numeric bounds or step. Enable for RUN/SKIP, cache-device, and estimated-speedup diagnostics."}
+    },
+    "outputs": {
+      "0": {"name": "Model", "tooltip": "The same accelerated MiniMax H3 model with updated cache-device and logging options."}
+    }
+  },
   "MiniMaxH3TextEncoderCache": {
     "display_name": "⚡ MiniMax H3 Text Encoder Cache",
     "description": "Cache identical prompt and reference-image conditioning to avoid repeatedly running the 32B MiniMax H3 text encoder. The first encode still performs full computation.",
@@ -88,6 +100,15 @@
       "verbose": {
         "name": "Detailed Text Cache Log",
         "tooltip": "Purpose: print text-cache HIT and MISS messages. Default: disabled; choices are enabled or disabled, with no numeric bounds or step size. Enable for diagnosis and leave disabled for normal use."
+      },
+      "sage_attention": {
+        "name": "★ QwenVL SageAttention 2.1.1",
+        "tooltip": "Default auto: use the SageAttention 2.1.1 kernel interface for QwenVL vision and pure causal text attention, with safe PyTorch fallback for unsupported masks or kernels. enabled requires SageAttention; disabled keeps the native ComfyUI backend.",
+        "options": {
+          "auto": "Auto · Recommended",
+          "enabled": "Force Enabled",
+          "disabled": "Disabled"
+        }
       }
     },
     "outputs": {
@@ -95,6 +116,50 @@
         "name": "Cached Text Encoder",
         "tooltip": "Connect this to the MiniMax H3 conditioning node in place of the original CLIPLoader output."
       }
+    }
+  },
+  "LinjianMiniMaxH3ImageToVideo": {
+    "display_name": "linjian Image to Video (MiniMax H3)",
+    "description": "Creates a native subgraph matching the built-in Image to Video (MiniMax H3), with unet_name changed to a MODEL socket for the MiniMax H3 Speed Cache output.",
+    "inputs": {
+      "first_frame": {"name": "first_frame", "tooltip": "Optional first frame constraining the opening subject, composition, and style. Default unconnected; no numeric bounds or step. Large aspect-ratio differences may crop or scale the image."},
+      "last_frame": {"name": "last_frame", "tooltip": "Optional last frame constraining the ending and transition. Default unconnected; no numeric bounds or step. A large first/last-frame difference can reduce motion naturalness."},
+      "prompt": {"name": "prompt", "tooltip": "Describes content, camera motion, action, environment, and sound. Uses the bundled Chinese prompt by default; no numeric bounds or step. Clear, non-conflicting instructions improve consistency."},
+      "width": {"name": "width", "tooltip": "Output width. Default 1344; range 32–16384; step 32. Higher values can add detail but increase VRAM and runtime; use multiples of 32."},
+      "height": {"name": "height", "tooltip": "Output height. Default 768; range 32–16384; step 32. Higher values can add detail but increase VRAM and runtime; use multiples of 32."},
+      "value_1": {"name": "duration", "tooltip": "Video seconds converted to frames at 24 fps. Default 30 seconds; common 5–15 seconds; step 0.1 second. Runtime and memory grow strongly with duration; 30 seconds is about 736 frames."},
+      "steps": {"name": "steps", "tooltip": "BasicScheduler sampling steps. Default 20; range 1–10000; step 1. More steps increase runtime; too few can reduce detail and stability. Start with 20 for MiniMax H3."},
+      "noise_seed": {"name": "noise_seed", "tooltip": "Initial-noise seed for reproducibility or variation. Default 28250570182816; range 0–18446744073709551615; step 1. Changing it alters composition, motion, and detail."},
+      "unet_name": {"name": "unet_name", "tooltip": "Requires a MODEL from MiniMax H3 Speed Cache (Safe). Default unconnected; no numeric bounds or step. Connect UNETLoader → Speed Cache → this socket; do not connect raw UNET directly."},
+      "cache_device": {"name": "cache_device", "tooltip": "Overrides the external cache device for this run. Default auto; choices auto, gpu, cpu; no numeric step. auto is recommended; gpu is faster but uses VRAM; cpu saves VRAM but transfer may slow generation."},
+      "verbose": {"name": "verbose", "tooltip": "Overrides detailed cache logging. Default off; choices on or off; no numeric bounds or step. Enable for RUN/SKIP, device, and estimated-speedup diagnostics."},
+      "clip_name": {"name": "clip_name", "tooltip": "Selects the MiniMax H3 QwenVL text/vision encoder. Defaults to the Qwen3-VL 32B MiniMax H3 INT8 ConvRot file; no numeric bounds or step. Changing it reloads the encoder."},
+      "vae_name": {"name": "vae_name", "tooltip": "Selects the MiniMax H3 video VAE that decodes latent video frames. Defaults to minimax_h3_video_vae_fp16.safetensors; no numeric bounds or step. A mismatched VAE can fail or alter colors."},
+      "vae_name_1": {"name": "audio_vae", "tooltip": "Selects the MiniMax H3 audio VAE that decodes latent audio. Defaults to minimax_h3_audio_vae_fp32.safetensors; no numeric bounds or step. A mismatch can produce silence or failure."}
+    }
+  },
+  "LinjianMiniMaxH3ReferenceToVideo": {
+    "display_name": "linjian Reference to Video (MiniMax H3)",
+    "description": "Built-in-compatible MiniMax H3 picture, video, and audio reference conditioning with an internal SageAttention 2.1.1 QwenVL adapter and safe PyTorch fallback.",
+    "inputs": {
+      "clip": {"name": "clip", "tooltip": "Connect a CLIPLoader configured for MiniMax H3; QwenVL SageAttention 2.1.1 is applied automatically when compatible."},
+      "vae": {"name": "vae", "tooltip": "Connect the MiniMax H3 video VAE used to encode reference pictures and videos."},
+      "audio_vae": {"name": "audio_vae", "tooltip": "Connect the MiniMax H3 audio VAE used to encode reference soundtracks and audio."},
+      "prompt": {"name": "prompt", "tooltip": "Describe the output and reference connected media with <Picture i>, <Video k>, and <Audio j> tags."},
+      "width": {"name": "width", "tooltip": "Output width. Default 1344; minimum 32; maximum is the ComfyUI resolution limit; step 32."},
+      "height": {"name": "height", "tooltip": "Output height. Default 768; minimum 32; maximum is the ComfyUI resolution limit; step 32."},
+      "length": {"name": "length", "tooltip": "Frame count at 24 fps. Default 124; range 5-3600; step 17; trained range is about 124-362."},
+      "ref_image_size": {"name": "ref_image_size", "tooltip": "Default match scales references to the output area. max uses the 2048px-short-edge reference path for stronger identity but can be much slower."},
+      "ref_image_0": {"name": "ref_image_0", "tooltip": "First reference picture; large pictures are downscaled and smaller pictures are not enlarged."},
+      "ref_image_1": {"name": "ref_image_1", "tooltip": "Second reference picture; large pictures are downscaled and smaller pictures are not enlarged."},
+      "ref_image_2": {"name": "ref_image_2", "tooltip": "Third reference picture; large pictures are downscaled and smaller pictures are not enlarged."},
+      "ref_video_0": {"name": "ref_video_0", "tooltip": "Reference video frames at 24 fps; use a 2-15 second clip."},
+      "ref_video_audio_0": {"name": "ref_video_audio_0", "tooltip": "Soundtrack belonging to ref_video_0."},
+      "ref_audio_0": {"name": "ref_audio_0", "tooltip": "Standalone reference audio that is not tied to a video."}
+    },
+    "outputs": {
+      "0": {"name": "positive", "tooltip": "Positive conditioning carrying the MiniMax H3 reference payloads."},
+      "1": {"name": "Latent", "tooltip": "Empty MiniMax H3 audio/video latent at the selected dimensions and length."}
     }
   }
 }
