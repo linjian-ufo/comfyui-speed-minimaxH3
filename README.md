@@ -24,6 +24,10 @@ MiniMax H3 专用的 ComfyUI 安全加速节点。它默认自动为扩散模型
 
 > 截图使用 `enabled` 强制启用模式进行确认；日常使用推荐保持默认 `auto`，兼顾加速与兼容性。
 
+![MiniMax H3 加速缓存连接 linjian 图生视频界面](assets/minimax-h3-image-to-video-ui.png)
+
+> 上图展示推荐连接方式：`UNETLoader → MiniMax H3 Speed Cache (Safe) → linjian Image to Video (MiniMax H3)`。截图中的 `steps`、`verbose` 等数值用于界面演示，日常使用仍建议从本文默认参数开始。
+
 ## ★ 核心升级：MiniMax H3 文本编码缓存
 
 新增独立节点 `MiniMax H3 Text Encoder Cache`，用于加速重复的 MiniMax H3 提示词和参考图编码：
