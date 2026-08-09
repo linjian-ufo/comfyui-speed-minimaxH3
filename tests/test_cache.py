@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import importlib.util
 import json
 from pathlib import Path
@@ -22,13 +23,19 @@ if PACKAGE_NAME not in sys.modules:
     package_spec.loader.exec_module(package_module)
 
 from comfyui_speed_minimaxh3_test_target import nodes as nodes_module  # noqa: E402
+from comfyui_speed_minimaxh3_test_target import reference_to_video as reference_module  # noqa: E402
+from comfyui_speed_minimaxh3_test_target import text_encoder as text_encoder_module  # noqa: E402
 from comfyui_speed_minimaxh3_test_target.nodes import (  # noqa: E402
     MiniMaxH3CacheController,
+    MiniMaxH3CacheRuntimeOptions,
     MiniMaxH3SpeedCache,
 )
 from comfyui_speed_minimaxh3_test_target.text_encoder import (  # noqa: E402
     MiniMaxH3TextEncoderCache,
     token_fingerprint,
+)
+from comfyui_speed_minimaxh3_test_target.reference_to_video import (  # noqa: E402
+    LinjianMiniMaxH3ReferenceToVideo,
 )
 
 
@@ -336,6 +343,53 @@ class NodePatchTests(unittest.TestCase):
         finally:
             nodes_module.ensure_minimax_h3_block_loop_support = original_ensure
 
+    def test_subgraph_runtime_options_update_existing_controller_only(self):
+        original_ensure = nodes_module.ensure_minimax_h3_block_loop_support
+        nodes_module.ensure_minimax_h3_block_loop_support = lambda: "test-hook"
+        try:
+            patched = MiniMaxH3SpeedCache().patch(
+                self.FakeModel(),
+                reuse_threshold=0.12,
+                start_percent=0.1,
+                end_percent=0.9,
+                max_consecutive_skips=2,
+                cache_device="gpu",
+                sage_attention="disabled",
+            )[0]
+        finally:
+            nodes_module.ensure_minimax_h3_block_loop_support = original_ensure
+
+        controller = patched.model_options["transformer_options"]["patches_replace"][
+            "dit"
+        ][("block_loop", 0)]
+        returned = MiniMaxH3CacheRuntimeOptions().apply(
+            patched,
+            cache_device="cpu",
+            verbose=True,
+        )[0]
+
+        self.assertIs(returned, patched)
+        self.assertIs(
+            returned.model_options["transformer_options"]["patches_replace"]["dit"][
+                ("block_loop", 0)
+            ],
+            controller,
+        )
+        self.assertEqual(controller.cache_device, "cpu")
+        self.assertIs(controller.verbose, True)
+
+    def test_subgraph_runtime_options_reject_raw_unet(self):
+        with self.assertRaisesRegex(RuntimeError, "必须连接 MiniMax H3 Speed Cache"):
+            MiniMaxH3CacheRuntimeOptions().apply(self.FakeModel())
+
+    def test_subgraph_runtime_options_have_chinese_hover_help(self):
+        inputs = MiniMaxH3CacheRuntimeOptions.INPUT_TYPES()["required"]
+        self.assertEqual(set(inputs), {"model", "cache_device", "verbose"})
+        for name, definition in inputs.items():
+            tooltip = definition[1]["tooltip"]
+            self.assertTrue(any("\u4e00" <= char <= "\u9fff" for char in tooltip), name)
+            self.assertIn("默认", tooltip, name)
+
 
 class TextEncoderCacheTests(unittest.TestCase):
     class FakeClip:
@@ -368,6 +422,7 @@ class TextEncoderCacheTests(unittest.TestCase):
         input_names = set(inputs["required"]) | set(inputs["optional"])
         self.assertIs(inputs["required"]["cache_enabled"][1]["default"], True)
         self.assertEqual(inputs["required"]["max_cache_entries"][1]["default"], 2)
+        self.assertEqual(inputs["optional"]["sage_attention"][1]["default"], "auto")
 
         for group in ("required", "optional"):
             for name, definition in inputs[group].items():
@@ -391,6 +446,29 @@ class TextEncoderCacheTests(unittest.TestCase):
         self.assertEqual(patched.calls, 1)
         self.assertTrue(torch.equal(first, second))
 
+    def test_text_encoder_uses_qwenvl_sage_context(self):
+        original_context = text_encoder_module.qwen_vl_sage_context
+        calls = []
+
+        @contextmanager
+        def fake_context(*, required=False):
+            calls.append(required)
+            yield "test-qwenvl-sage"
+
+        text_encoder_module.qwen_vl_sage_context = fake_context
+        try:
+            patched = MiniMaxH3TextEncoderCache().patch(
+                self.FakeClip(),
+                cache_enabled=False,
+                max_cache_entries=2,
+                sage_attention="enabled",
+            )[0]
+            patched.encode_from_tokens({"qwen3vl_32b": [(1, 1.0)]})
+        finally:
+            text_encoder_module.qwen_vl_sage_context = original_context
+
+        self.assertEqual(calls, [True])
+
     def test_cached_dictionary_survives_scheduled_encoder_mutation(self):
         patched = MiniMaxH3TextEncoderCache().patch(
             self.FakeClip(), cache_enabled=True, max_cache_entries=2
@@ -411,6 +489,196 @@ class TextEncoderCacheTests(unittest.TestCase):
             MiniMaxH3TextEncoderCache().patch(
                 other, cache_enabled=True, max_cache_entries=2
             )
+
+
+class SubgraphBundleTests(unittest.TestCase):
+    def test_linjian_subgraph_replaces_unet_combo_with_model_socket(self):
+        source = (PACKAGE_ROOT / "web" / "linjian_minimax_h3_subgraph.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('const SUBGRAPH_NAME = "linjian Image to Video (MiniMax H3)"', source)
+        self.assertIn('slot("unet_name", "MODEL", [229]', source)
+        self.assertIn('target_id: 9, target_slot: 0, type: "MODEL"', source)
+        self.assertIn('target_id: 16, target_slot: 0, type: "MODEL"', source)
+        self.assertNotIn('"UNETLoader",', source)
+        self.assertIn("subgraph.configure(definition)", source)
+        self.assertIn('"MiniMaxH3TextEncoderCache"', source)
+        self.assertIn('"sage_attention", "COMBO"', source)
+        self.assertIn('origin_id: 112, origin_slot: 0, target_id: 104', source)
+        self.assertIn('minimax-H3\\\\qwen3vl_32b_minimax_h3_int8_convrot.safetensors', source)
+        self.assertIn('minimax-H3\\\\minimax_h3_video_vae_fp16.safetensors', source)
+        self.assertIn('minimax-H3\\\\minimax_h3_audio_vae_fp32.safetensors', source)
+        self.assertIn("function createOuterNodeConfig", source)
+        self.assertIn('{ name: "prompt", type: "STRING", widget: { name: "prompt" }', source)
+        self.assertIn('{ name: "steps", type: "INT", widget: { name: "steps" }', source)
+        self.assertIn('{ name: "unet_name", type: "MODEL", link: null, tooltip:', source)
+        self.assertIn('{ name: "cache_device", type: "COMBO", widget: { name: "cache_device" }', source)
+        self.assertIn('{ name: "verbose", type: "BOOLEAN", widget: { name: "verbose" }', source)
+        self.assertIn('"MiniMaxH3CacheRuntimeOptions"', source)
+        self.assertIn('input("steps", "INT", 232, true)', source)
+        self.assertIn("function migrateLegacyImageNode", source)
+        self.assertIn("function registerImageTooltipNodeDef", source)
+        self.assertIn("app.updateVueAppNodeDefs(nodeDefs)", source)
+        self.assertIn("replacement.configure(outerConfig)", source)
+        self.assertIn("replacement.setSize?.([480, 690])", source)
+
+    def test_linjian_image_locales_cover_every_outer_input(self):
+        expected_inputs = {
+            "first_frame",
+            "last_frame",
+            "prompt",
+            "width",
+            "height",
+            "value_1",
+            "steps",
+            "noise_seed",
+            "unet_name",
+            "cache_device",
+            "verbose",
+            "clip_name",
+            "vae_name",
+            "vae_name_1",
+        }
+        for language in ("en", "zh"):
+            locale_path = PACKAGE_ROOT / "locales" / language / "nodeDefs.json"
+            with locale_path.open("r", encoding="utf-8") as handle:
+                definition = json.load(handle)["LinjianMiniMaxH3ImageToVideo"]
+            self.assertEqual(set(definition["inputs"]), expected_inputs)
+            for input_definition in definition["inputs"].values():
+                self.assertTrue(input_definition["name"].strip())
+                self.assertTrue(input_definition["tooltip"].strip())
+
+
+class ReferenceToVideoTests(unittest.TestCase):
+    def test_schema_matches_requested_reference_layout(self):
+        info = LinjianMiniMaxH3ReferenceToVideo.GET_NODE_INFO_V1()
+        self.assertEqual(
+            info["display_name"], "linjian Reference to Video (MiniMax H3)"
+        )
+        self.assertEqual(info["category"], "MiniMaxH3")
+        self.assertEqual(
+            info["input_order"]["required"],
+            [
+                "clip",
+                "vae",
+                "audio_vae",
+                "prompt",
+                "width",
+                "height",
+                "length",
+                "ref_image_size",
+            ],
+        )
+        self.assertEqual(
+            info["input_order"]["optional"],
+            [
+                "ref_image_0",
+                "ref_image_1",
+                "ref_image_2",
+                "ref_video_0",
+                "ref_video_audio_0",
+                "ref_audio_0",
+            ],
+        )
+        optional = info["input"]["optional"]
+        self.assertEqual(optional["ref_image_0"][0], "IMAGE")
+        self.assertEqual(optional["ref_image_1"][0], "IMAGE")
+        self.assertEqual(optional["ref_image_2"][0], "IMAGE")
+        self.assertEqual(optional["ref_video_0"][0], "IMAGE")
+        self.assertEqual(optional["ref_video_audio_0"][0], "AUDIO")
+        self.assertEqual(optional["ref_audio_0"][0], "AUDIO")
+        self.assertEqual(info["output"], ["CONDITIONING", "LATENT"])
+        self.assertEqual(info["output_name"], ["positive", "Latent"])
+
+    def test_execute_adds_internal_auto_qwenvl_sage_adapter(self):
+        original_patch = reference_module.MiniMaxH3TextEncoderCache.patch
+        original_execute = reference_module.MiniMaxH3ReferenceToVideo.__dict__["execute"]
+        patched_clip = object()
+        calls = []
+
+        def fake_patch(
+            _self,
+            clip,
+            cache_enabled,
+            max_cache_entries,
+            verbose=False,
+            sage_attention="auto",
+        ):
+            calls.append(
+                (clip, cache_enabled, max_cache_entries, verbose, sage_attention)
+            )
+            return (patched_clip,)
+
+        @classmethod
+        def fake_execute(cls, clip, *args):
+            calls.append((cls, clip, args))
+            return "reference-result"
+
+        reference_module.MiniMaxH3TextEncoderCache.patch = fake_patch
+        reference_module.MiniMaxH3ReferenceToVideo.execute = fake_execute
+        try:
+            clip = object()
+            result = LinjianMiniMaxH3ReferenceToVideo.execute(
+                clip,
+                object(),
+                object(),
+                "prompt",
+                1344,
+                768,
+                124,
+            )
+        finally:
+            reference_module.MiniMaxH3TextEncoderCache.patch = original_patch
+            reference_module.MiniMaxH3ReferenceToVideo.execute = original_execute
+
+        self.assertEqual(result, "reference-result")
+        self.assertEqual(calls[0], (clip, False, 2, False, "auto"))
+        self.assertIs(calls[1][1], patched_clip)
+
+    def test_reference_locales_cover_every_logical_input(self):
+        expected_inputs = {
+            "clip",
+            "vae",
+            "audio_vae",
+            "prompt",
+            "width",
+            "height",
+            "length",
+            "ref_image_size",
+            "ref_image_0",
+            "ref_image_1",
+            "ref_image_2",
+            "ref_video_0",
+            "ref_video_audio_0",
+            "ref_audio_0",
+        }
+        for language in ("en", "zh"):
+            locale_path = PACKAGE_ROOT / "locales" / language / "nodeDefs.json"
+            with locale_path.open("r", encoding="utf-8") as handle:
+                definition = json.load(handle)["LinjianMiniMaxH3ReferenceToVideo"]
+            self.assertEqual(set(definition["inputs"]), expected_inputs)
+            self.assertEqual(
+                definition["display_name"],
+                "linjian Reference to Video (MiniMax H3)",
+            )
+            for input_definition in definition["inputs"].values():
+                self.assertTrue(input_definition["name"].strip())
+                self.assertTrue(input_definition["tooltip"].strip())
+
+    def test_reference_backend_tooltips_are_detailed_chinese(self):
+        info = LinjianMiniMaxH3ReferenceToVideo.GET_NODE_INFO_V1()
+        for group in ("required", "optional"):
+            for name, definition in info["input"][group].items():
+                tooltip = definition[1]["tooltip"]
+                self.assertTrue(any("\u4e00" <= char <= "\u9fff" for char in tooltip), name)
+                self.assertIn("默认", tooltip, name)
+
+    def test_reference_frontend_uses_requested_tall_layout(self):
+        source = (
+            PACKAGE_ROOT / "web" / "linjian_minimax_h3_reference.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn('const NODE_NAME = "LinjianMiniMaxH3ReferenceToVideo"', source)
+        self.assertIn("this.setSize?.([365, 485])", source)
 
 if __name__ == "__main__":
     unittest.main()

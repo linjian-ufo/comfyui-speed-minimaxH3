@@ -9,6 +9,8 @@ from typing import Any
 
 import torch
 
+from .attention import qwen_vl_sage_context
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -131,7 +133,19 @@ class MiniMaxH3TextEncoderCache:
                             "步长。排错时开启，日常使用保持关闭。"
                         ),
                     },
-                )
+                ),
+                "sage_attention": (
+                    ["auto", "enabled", "disabled"],
+                    {
+                        "default": "auto",
+                        "tooltip": (
+                            "作用：控制 MiniMax H3 QwenVL 文本/视觉编码注意力。默认 auto："
+                            "SageAttention 2.1.1 可用时，为视觉塔和纯因果文本注意力启用专用"
+                            "内核接口；不兼容的遮罩或内核会安全回退到 PyTorch。enabled：要求"
+                            "必须检测到 SageAttention；disabled：保持 ComfyUI 原生后端。"
+                        ),
+                    },
+                ),
             },
         }
 
@@ -146,19 +160,57 @@ class MiniMaxH3TextEncoderCache:
         cache_enabled: bool,
         max_cache_entries: int,
         verbose: bool = False,
+        sage_attention: str = "auto",
     ) -> tuple[Any]:
         if not self._is_minimax_clip(clip):
             actual = type(getattr(clip, "cond_stage_model", None)).__name__
             raise ValueError(f"该节点仅支持 MiniMax H3 文本编码器，当前为 {actual}。")
 
+        if sage_attention not in {"auto", "enabled", "disabled"}:
+            LOGGER.warning(
+                "MiniMax H3 repaired an invalid legacy text SageAttention value %r to auto.",
+                sage_attention,
+            )
+            sage_attention = "auto"
+
         patched_clip = clip.clone()
-        if not cache_enabled:
-            return (patched_clip,)
 
         original_encode = patched_clip.encode_from_tokens
         cache: OrderedDict[str, Any] = OrderedDict()
         lock = threading.RLock()
         max_entries = max(1, int(max_cache_entries))
+
+        def encode_with_attention(
+            tokens: Any,
+            return_pooled: Any = False,
+            return_dict: bool = False,
+        ) -> Any:
+            if sage_attention == "disabled":
+                return original_encode(
+                    tokens,
+                    return_pooled=return_pooled,
+                    return_dict=return_dict,
+                )
+            with qwen_vl_sage_context(required=sage_attention == "enabled") as status:
+                if verbose:
+                    LOGGER.info("MiniMax H3 QwenVL attention backend: %s", status)
+                return original_encode(
+                    tokens,
+                    return_pooled=return_pooled,
+                    return_dict=return_dict,
+                )
+
+        if not cache_enabled:
+            def sage_encode(
+                _self: Any,
+                tokens: Any,
+                return_pooled: Any = False,
+                return_dict: bool = False,
+            ) -> Any:
+                return encode_with_attention(tokens, return_pooled, return_dict)
+
+            patched_clip.encode_from_tokens = types.MethodType(sage_encode, patched_clip)
+            return (patched_clip,)
 
         def cached_encode(
             _self: Any,
@@ -179,11 +231,7 @@ class MiniMaxH3TextEncoderCache:
 
             if verbose:
                 LOGGER.info("MiniMax H3 text encoder cache: MISS %s", key[:10])
-            value = original_encode(
-                tokens,
-                return_pooled=return_pooled,
-                return_dict=return_dict,
-            )
+            value = encode_with_attention(tokens, return_pooled, return_dict)
             cached_value = _detach_tree(value)
             with lock:
                 cache[key] = cached_value

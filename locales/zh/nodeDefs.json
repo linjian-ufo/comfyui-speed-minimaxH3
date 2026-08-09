@@ -69,6 +69,18 @@
       }
     }
   },
+  "MiniMaxH3CacheRuntimeOptions": {
+    "display_name": "MiniMax H3 子图缓存运行选项",
+    "description": "在不叠加第二个缓存的前提下，覆盖外接 MiniMax H3 Speed Cache 的缓存设备和日志选项。",
+    "inputs": {
+      "model": {"name": "加速后的模型", "tooltip": "作用：接收已经经过 MiniMax H3 Speed Cache (Safe) 的 MODEL。默认无连接，没有数值范围或步长。不能直接连接原始 UNETLoader，否则会明确报错。"},
+      "cache_device": {"name": "缓存设备", "tooltip": "作用：覆盖本次运行的缓存保存位置。默认 auto；可选 auto、gpu、cpu，没有数值步长。auto 推荐；gpu 通常最快但更占显存；cpu 节省显存但回传可能变慢。", "options": {"auto": "自动 · 推荐", "gpu": "GPU · 最快", "cpu": "CPU · 节省显存"}},
+      "verbose": {"name": "详细缓存日志", "tooltip": "作用：覆盖本次运行的详细日志开关。默认关闭；可选开启或关闭，没有数值范围或步长。开启后打印 RUN/SKIP、缓存设备和估算加速统计，适合测速和排错。"}
+    },
+    "outputs": {
+      "0": {"name": "模型", "tooltip": "保持同一个 MiniMax H3 加速模型，只更新缓存设备与日志运行选项。"}
+    }
+  },
   "MiniMaxH3TextEncoderCache": {
     "display_name": "⚡ MiniMax H3 文本编码缓存",
     "description": "缓存完全相同的提示词与参考图编码结果，避免重复运行 32B MiniMax H3 文本编码器。首次编码仍会完整计算。",
@@ -88,6 +100,15 @@
       "verbose": {
         "name": "详细文本缓存日志",
         "tooltip": "作用：显示缓存 HIT（命中）和 MISS（未命中）。默认关闭；可选开启或关闭，没有数值范围和调节步长。排错时开启，日常使用保持关闭。"
+      },
+      "sage_attention": {
+        "name": "★ QwenVL SageAttention 2.1.1",
+        "tooltip": "默认 auto：为 QwenVL 视觉塔和纯因果文本注意力启用 SageAttention 2.1.1 内核接口；遇到不兼容遮罩或内核时安全回退到 PyTorch。enabled 要求已安装 SageAttention；disabled 保持 ComfyUI 原生后端。",
+        "options": {
+          "auto": "自动 · 推荐",
+          "enabled": "强制启用",
+          "disabled": "关闭"
+        }
       }
     },
     "outputs": {
@@ -95,6 +116,50 @@
         "name": "带缓存的文本编码器",
         "tooltip": "连接到原本使用 CLIPLoader 输出的 MiniMax H3 条件节点。"
       }
+    }
+  },
+  "LinjianMiniMaxH3ImageToVideo": {
+    "display_name": "linjian Image to Video (MiniMax H3)",
+    "description": "创建与内置 Image to Video (MiniMax H3) 相同的原生子图，并把 unet_name 改为 MODEL 接口，以便直接连接 MiniMax H3 Speed Cache 输出。",
+    "inputs": {
+      "first_frame": {"name": "first_frame", "tooltip": "作用：可选首帧图片，约束视频开头的主体、构图和风格。默认不连接，没有数值范围或步长。连接后按目标宽高处理；比例差异过大可能裁切或缩放。"},
+      "last_frame": {"name": "last_frame", "tooltip": "作用：可选尾帧图片，约束结尾画面和首尾过渡。默认不连接，没有数值范围或步长。首尾差异过大可能降低运动自然度。"},
+      "prompt": {"name": "prompt", "tooltip": "作用：描述视频内容、镜头运动、动作、环境和声音。默认使用节点内置中文提示词，没有数值范围或步长。描述越明确越利于稳定复现，冲突或过长会降低一致性。"},
+      "width": {"name": "width", "tooltip": "作用：设置输出宽度。默认 1344；范围 32–16384，步长 32。数值越大细节潜力越高，但显存和耗时明显增加；建议保持 32 的倍数。"},
+      "height": {"name": "height", "tooltip": "作用：设置输出高度。默认 768；范围 32–16384，步长 32。数值越大细节潜力越高，但显存和耗时明显增加；建议保持 32 的倍数。"},
+      "value_1": {"name": "duration", "tooltip": "作用：设置视频秒数并按 24 fps 换算帧数。默认 30 秒；常用约 5–15 秒，步长 0.1 秒。时长越长，帧数、显存和耗时近似成倍增加；30 秒约 736 帧。"},
+      "steps": {"name": "steps", "tooltip": "作用：控制 BasicScheduler 采样步数。默认 20；范围 1–10000，步长 1。步数越高耗时近似增加，过低可能细节不足；MiniMax H3 建议先用 20。"},
+      "noise_seed": {"name": "noise_seed", "tooltip": "作用：控制初始噪声以复现或变化结果。默认 28250570182816；范围 0–18446744073709551615，步长 1。相同条件与种子利于对比；换种子会改变构图和动作。"},
+      "unet_name": {"name": "unet_name", "tooltip": "作用：接收经过 MiniMax H3 Speed Cache (Safe) 的 MODEL。默认无连接，没有数值范围或步长。正确连接为 UNETLoader → 加速缓存 → 本接口，不能直接连接原始 UNET。"},
+      "cache_device": {"name": "cache_device", "tooltip": "作用：覆盖外接加速节点本次运行的缓存位置。默认 auto；可选 auto、gpu、cpu，没有数值步长。auto 推荐；gpu 快但占显存；cpu 省显存但回传可能变慢。"},
+      "verbose": {"name": "verbose", "tooltip": "作用：覆盖外接加速节点的详细日志。默认关闭；可选开启或关闭，没有数值范围或步长。开启后打印 RUN/SKIP、设备和估算加速比，适合首次测速和排错。"},
+      "clip_name": {"name": "clip_name", "tooltip": "作用：选择 MiniMax H3 QwenVL 文本/视觉编码器。默认使用 qwen3vl_32b MiniMax H3 INT8 ConvRot 文件，没有数值范围或步长。更换文件会重新加载。"},
+      "vae_name": {"name": "vae_name", "tooltip": "作用：选择 MiniMax H3 视频 VAE，将潜空间解码为视频帧。默认 minimax_h3_video_vae_fp16.safetensors，没有数值范围或步长。错误 VAE 会导致解码或颜色异常。"},
+      "vae_name_1": {"name": "audio_vae", "tooltip": "作用：选择 MiniMax H3 音频 VAE，将音频潜空间解码为声音。默认 minimax_h3_audio_vae_fp32.safetensors，没有数值范围或步长。错误 VAE 会导致无声或解码失败。"}
+    }
+  },
+  "LinjianMiniMaxH3ReferenceToVideo": {
+    "display_name": "linjian Reference to Video (MiniMax H3)",
+    "description": "与内置节点兼容的 MiniMax H3 参考图、参考视频和参考音频条件节点，内部自动适配 SageAttention 2.1.1 的 QwenVL 内核接口，不兼容时安全回退到 PyTorch。",
+    "inputs": {
+      "clip": {"name": "clip", "tooltip": "作用：连接类型设为 minimax 的 CLIPLoader，负责理解提示词和参考素材；内部自动尝试 QwenVL SageAttention 2.1.1。默认无连接，没有数值范围或步长。模型不匹配会编码失败；首次编码可能较慢。"},
+      "vae": {"name": "vae", "tooltip": "作用：连接 MiniMax H3 视频 VAE，用于编码参考图和参考视频并创建视频潜空间。默认无连接，没有数值范围或步长。错误或不匹配的 VAE 可能造成尺寸、颜色或编码异常。"},
+      "audio_vae": {"name": "audio_vae", "tooltip": "作用：连接 MiniMax H3 音频 VAE，用于编码参考视频音轨和独立参考音频。默认无连接，没有数值范围或步长。错误模型可能导致无声、编码失败或音频异常。"},
+      "prompt": {"name": "prompt", "tooltip": "作用：描述目标视频内容、动作、镜头、风格和声音，并用 <Picture 1>、<Video 1>、<Audio 1> 引用素材。默认空白，没有数值范围或步长。漏写或写错编号会削弱对应参考作用。"},
+      "width": {"name": "width", "tooltip": "作用：设置输出宽度。默认 1344；下限 32，上限为 ComfyUI 分辨率限制，步长 32。宽度越大细节潜力越高，但显存和生成时间明显增加；建议保持 32 的倍数。"},
+      "height": {"name": "height", "tooltip": "作用：设置输出高度。默认 768；下限 32，上限为 ComfyUI 分辨率限制，步长 32。高度越大细节潜力越高，但显存和生成时间明显增加；建议保持 32 的倍数。"},
+      "length": {"name": "length", "tooltip": "作用：设置 24 fps 下的帧数。默认 124 帧（约 5 秒）；范围 5–3600，步长 17，常用训练范围约 124–362 帧。帧数越多，耗时、占用和保持一致性的难度越高。"},
+      "ref_image_size": {"name": "ref_image_size", "tooltip": "作用：选择参考图处理尺寸。默认 match；可选 match 或 max，没有数值步长。match 按输出像素面积缩小，速度快、显存低；max 保留短边约 2048 像素，身份细节可能更强但编码可能慢数倍。"},
+      "ref_image_0": {"name": "ref_image_0", "tooltip": "作用：连接第 1 张参考图，并用 <Picture 1> 引用。默认不连接，没有数值范围或步长。大图会按策略缩小、小图不放大；清晰且主体完整的图片更利于保持身份。"},
+      "ref_image_1": {"name": "ref_image_1", "tooltip": "作用：连接第 2 张参考图，并用 <Picture 2> 引用。默认不连接，没有数值范围或步长。大图会按策略缩小、小图不放大；与第 1 张冲突的身份或构图可能降低一致性。"},
+      "ref_image_2": {"name": "ref_image_2", "tooltip": "作用：连接第 3 张参考图，并用 <Picture 3> 引用。默认不连接，没有数值范围或步长。素材越多，提示词越需要明确各参考图用途。"},
+      "ref_video_0": {"name": "ref_video_0", "tooltip": "作用：连接第 1 段参考视频帧，并用 <Video 1> 引用。默认不连接，没有数值范围或步长。按 24 fps 处理，建议 2–15 秒；越长编码越慢、占用越高。"},
+      "ref_video_audio_0": {"name": "ref_video_audio_0", "tooltip": "作用：连接与 ref_video_0 同一段视频对应的音轨。默认不连接，没有数值范围或步长。音轨应与视频时间和内容匹配，错配可能削弱音画关系。"},
+      "ref_audio_0": {"name": "ref_audio_0", "tooltip": "作用：连接独立参考音频，并用 <Audio 1> 引用。默认不连接，没有数值范围或步长。较长或噪声过多的音频会增加编码时间并降低参考明确性。"}
+    },
+    "outputs": {
+      "0": {"name": "positive", "tooltip": "输出：包含提示词及全部参考图片、视频和音频信息的 MiniMax H3 正向条件，连接到采样器或引导器的 positive/conditioning 接口。"},
+      "1": {"name": "Latent", "tooltip": "输出：按所选宽度、高度和帧数创建的 MiniMax H3 音视频潜空间，连接到采样器 latent_image；尺寸和帧数越大，占用与耗时越高。"}
     }
   }
 }
