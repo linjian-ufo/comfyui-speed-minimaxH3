@@ -24,6 +24,10 @@ Headings and items marked with **★** are new or substantially upgraded compare
 
 > The screenshot uses forced `enabled` mode for confirmation. For normal use, keep the recommended `auto` default for acceleration with compatibility fallback.
 
+![MiniMax H3 Speed Cache connected to the linjian Image to Video interface](assets/minimax-h3-image-to-video-ui.png)
+
+> This shows the recommended connection: `UNETLoader → MiniMax H3 Speed Cache (Safe) → linjian Image to Video (MiniMax H3)`. Values such as `steps` and `verbose` are shown for interface demonstration; start with the documented defaults for normal use.
+
 ## ★ Core upgrade: MiniMax H3 Text Encoder Cache
 
 The new standalone `MiniMax H3 Text Encoder Cache` node accelerates repeated MiniMax H3 prompt and reference-image encoding:
