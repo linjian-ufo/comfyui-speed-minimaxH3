@@ -206,7 +206,8 @@ cache_device             auto
 
 ## 兼容性
 
-- 面向具有 `MiniMaxH3Model` 的 ComfyUI 版本开发，并在 ComfyUI v0.30.0 接口上完成兼容验证。
+- 兼容 ComfyUI v0.30.0 和 v0.31.1 的 `MiniMaxH3Model` 音频输出接口：旧版保留斜率换算，新版交由外层 `forward()` 换算，避免重复缩放。
+- QwenVL 的 float32 或混合精度 Q/K/V 会直接使用 PyTorch；混合精度输入提升至共同精度，避免 SageAttention 重复报错及 PyTorch dtype 不匹配。
 - 新版 ComfyUI 如果原生提供 `block_loop` 接口，会直接复用。
 - 旧版 ComfyUI 没有 `MiniMaxH3Model` 时会明确报错并要求升级。
 - 不支持其他视频模型、图片模型或文本编码器模型。
@@ -250,6 +251,14 @@ cache_device             auto
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+仅运行本次兼容性回归测试（只需 PyTorch，无需 ComfyUI 或模型权重）：
+
+```bash
+python -m unittest discover -s tests -p test_compatibility.py -v
+```
+
+这些 CPU 回归测试不替代真实 GPU 音视频生成和画质验证。
 
 ## 许可证与来源
 

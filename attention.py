@@ -49,7 +49,18 @@ def attention_sage_qwenvl(
     import comfy.ops
     from sageattention import sageattn
 
-    if not skip_reshape:
+    # Vision RoPE can promote Q/K to float32. Sage requires matching half
+    # precision Q/K/V; preserve native precision rather than casting for speed.
+    if (
+        not skip_reshape
+        or q.dtype not in (torch.float16, torch.bfloat16)
+        or k.dtype != q.dtype
+        or v.dtype != q.dtype
+    ):
+        # PyTorch SDPA also requires matching dtypes. Promote mixed inputs
+        # (notably float32 vision Q/K with half V) without losing precision.
+        dtype = torch.promote_types(torch.promote_types(q.dtype, k.dtype), v.dtype)
+        q, k, v = (tensor.to(dtype=dtype) for tensor in (q, k, v))
         return attention.attention_pytorch(
             q,
             k,

@@ -337,13 +337,18 @@ def ensure_minimax_h3_block_loop_support() -> str:
             )
             video_output = video_output[:, :, :orig_t, :orig_h, :orig_w]
             audio_output = minimax_model.unpack_audio(audio_output)
-            slope_a = minimax_model.time_shift_slope(
-                sigma_v, shift_v, shift_a
-            ).to(audio_output.dtype)
-            return [
-                -video_output.to(video_x.dtype),
-                (-slope_a) * audio_output.to(audio_x.dtype),
-            ]
+            # ComfyUI v0.30 converts audio velocity here. Since v0.31 the
+            # outer forward owns that conversion, and time_shift_slope is gone.
+            # Leave the new path unscaled to avoid converting audio twice.
+            time_shift_slope = getattr(minimax_model, "time_shift_slope", None)
+            if callable(time_shift_slope):
+                slope_a = time_shift_slope(sigma_v, shift_v, shift_a).to(
+                    audio_output.dtype
+                )
+                audio_output = (-slope_a) * audio_output.to(audio_x.dtype)
+            else:
+                audio_output = -audio_output.to(audio_x.dtype)
+            return [-video_output.to(video_x.dtype), audio_output]
 
         model_class._run_blocks = _run_blocks
         model_class._forward = patched_forward

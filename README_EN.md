@@ -206,7 +206,8 @@ This node does not control GPU hardware and does not bypass NVIDIA temperature o
 
 ## Compatibility
 
-- Designed for ComfyUI versions that provide `MiniMaxH3Model`; compatibility was validated against the ComfyUI v0.30.0 interface.
+- Supports the ComfyUI v0.30.0 and v0.31.1 `MiniMaxH3Model` audio-output interfaces: older versions retain derivative scaling; newer versions leave conversion to the outer `forward()` to avoid double scaling.
+- Float32 or mixed-precision QwenVL Q/K/V use PyTorch directly. Mixed inputs are promoted to a common dtype, preventing repeated SageAttention failures and PyTorch dtype mismatches.
 - Reuses native `block_loop` support when available in newer ComfyUI versions.
 - Raises a clear upgrade error when an older ComfyUI version has no `MiniMaxH3Model`.
 - Does not support other video models, image models, or text-encoder models.
@@ -250,6 +251,14 @@ Run the suite in a Python environment that can import ComfyUI and PyTorch:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+Run only the compatibility regression tests with PyTorch (no ComfyUI or model weights needed):
+
+```bash
+python -m unittest discover -s tests -p test_compatibility.py -v
+```
+
+These CPU regression tests do not replace real GPU audio/video generation or quality validation.
 
 ## License and acknowledgements
 
