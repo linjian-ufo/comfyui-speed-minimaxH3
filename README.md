@@ -206,6 +206,8 @@ cache_device             auto
 
 ## 兼容性
 
+- 修复 ComfyUI v0.40.0 的 `FinalLayer.forward()` 缺少 `sigma`、`sample_sigmas`、`shifts` 的错误，同时保留旧版四参数接口。PDD 输出头使用采样器的原始 sigma 时间表，不伪造时间步。
+- 同步适配新版布局构造、关键帧音频条件、逐行去噪遮罩及 attention/prefetch 钩子。更新插件后请完整重启 ComfyUI。
 - 兼容 ComfyUI v0.30.0 和 v0.31.1 的 `MiniMaxH3Model` 音频输出接口：旧版保留斜率换算，新版交由外层 `forward()` 换算，避免重复缩放。
 - QwenVL 的 float32 或混合精度 Q/K/V 会直接使用 PyTorch；混合精度输入提升至共同精度，避免 SageAttention 重复报错及 PyTorch dtype 不匹配。
 - 新版 ComfyUI 如果原生提供 `block_loop` 接口，会直接复用。
@@ -259,6 +261,14 @@ python -m unittest discover -s tests -p test_compatibility.py -v
 ```
 
 这些 CPU 回归测试不替代真实 GPU 音视频生成和画质验证。
+
+可选：对照本机 ComfyUI 的原始 `model.py` 运行 CPU 数值回归（Linux/macOS 示例；Windows 可先设置同名环境变量）：
+
+```bash
+COMFY_MINIMAX_SOURCE=/path/to/ComfyUI/comfy/ldm/minimax/model.py python -m unittest discover -s tests -p test_upstream_compatibility.py -v
+```
+
+这些测试使用小尺寸随机权重，执行官方的打包、时间步、输出层及音频转换代码，并替换 attention block 和内存服务。覆盖普通/PDD 输出、条件音频、遮罩、尺寸裁切及缓存 block-loop 路径；不是模型权重或 GPU 内核的端到端测试。未设置环境变量时会明确跳过。
 
 ## 许可证与来源
 

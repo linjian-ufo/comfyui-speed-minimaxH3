@@ -206,6 +206,8 @@ This node does not control GPU hardware and does not bypass NVIDIA temperature o
 
 ## Compatibility
 
+- Fixes the ComfyUI v0.40.0 `FinalLayer.forward()` error for missing `sigma`, `sample_sigmas`, and `shifts`, while retaining the older four-argument interface. PDD output heads receive the sampler's original sigma schedule; no timesteps are fabricated.
+- Adapts newer layout construction, keyframe audio conditioning, per-row denoise masks, and attention/prefetch hooks. Fully restart ComfyUI after updating the plugin.
 - Supports the ComfyUI v0.30.0 and v0.31.1 `MiniMaxH3Model` audio-output interfaces: older versions retain derivative scaling; newer versions leave conversion to the outer `forward()` to avoid double scaling.
 - Float32 or mixed-precision QwenVL Q/K/V use PyTorch directly. Mixed inputs are promoted to a common dtype, preventing repeated SageAttention failures and PyTorch dtype mismatches.
 - Reuses native `block_loop` support when available in newer ComfyUI versions.
@@ -259,6 +261,14 @@ python -m unittest discover -s tests -p test_compatibility.py -v
 ```
 
 These CPU regression tests do not replace real GPU audio/video generation or quality validation.
+
+Optional CPU numerical parity checks against an unmodified ComfyUI `model.py` (Linux/macOS example; on Windows, set the same environment variable first):
+
+```bash
+COMFY_MINIMAX_SOURCE=/path/to/ComfyUI/comfy/ldm/minimax/model.py python -m unittest discover -s tests -p test_upstream_compatibility.py -v
+```
+
+These tests use tiny random weights and execute upstream packing, timestep, final-head, and audio-conversion code, with attention blocks and memory services replaced by test doubles. They cover regular/PDD heads, audio conditioning, masks, output cropping, and the cache block-loop path, not end-to-end model-weight or GPU-kernel inference. Tests explicitly skip when the environment variable is unset.
 
 ## License and acknowledgements
 

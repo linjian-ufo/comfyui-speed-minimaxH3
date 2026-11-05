@@ -7,13 +7,23 @@ from typing import Any
 import torch
 
 
-PATCH_VERSION = 1
+PATCH_VERSION = 2
 _PATCH_LOCK = threading.Lock()
 
 
+def _accepts_keyword(callable_object: Any, name: str) -> bool:
+    """Inspect the API rather than retrying a model call after a TypeError."""
+    parameters = inspect.signature(callable_object).parameters
+    return name in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
 def _has_block_loop_support(model_class: type) -> bool:
-    if getattr(model_class, "_speed_minimax_h3_block_loop_version", 0) >= PATCH_VERSION:
-        return True
+    installed_version = getattr(model_class, "_speed_minimax_h3_block_loop_version", 0)
+    if installed_version:
+        return installed_version >= PATCH_VERSION
     if not hasattr(model_class, "_run_blocks"):
         return False
     try:
@@ -41,6 +51,12 @@ def ensure_minimax_h3_block_loop_support() -> str:
         if _has_block_loop_support(model_class):
             return "existing-compatible-hook"
 
+        prefetch_pop = minimax_model.comfy.model_prefetch.prefetch_queue_pop
+        prefetch_options = (
+            {"malloc_scope": "block"}
+            if _accepts_keyword(prefetch_pop, "malloc_scope") else {}
+        )
+
         def _run_blocks(
             self: Any,
             h: torch.Tensor,
@@ -59,11 +75,15 @@ def ensure_minimax_h3_block_loop_support() -> str:
             )
             for index in range(start, end):
                 block = self.blocks[index]
-                minimax_model.comfy.model_prefetch.prefetch_queue_pop(
-                    prefetch_queue, h.device, block
-                )
+                prefetch_pop(prefetch_queue, h.device, block, **prefetch_options)
+                transformer_options["block_index"] = index
                 if ("double_block", index) in blocks_replace:
                     def block_wrap(args: dict[str, Any], current_block: Any = block) -> dict[str, torch.Tensor]:
+                        block_options = {}
+                        if "attention" in args:
+                            block_forward = getattr(current_block, "forward", current_block)
+                            if _accepts_keyword(block_forward, "attention"):
+                                block_options["attention"] = args["attention"]
                         return {
                             "img": current_block(
                                 args["img"],
@@ -71,6 +91,7 @@ def ensure_minimax_h3_block_loop_support() -> str:
                                 args["mod_segments"],
                                 args["rope_freqs"],
                                 transformer_options=args["transformer_options"],
+                                **block_options,
                             )
                         }
 
@@ -80,6 +101,7 @@ def ensure_minimax_h3_block_loop_support() -> str:
                             "t_emb": t_emb,
                             "mod_segments": mod_segments,
                             "rope_freqs": rope_freqs,
+                            "layout": transformer_options.get("minimax_h3_layout"),
                             "transformer_options": transformer_options,
                         },
                         {"original_block": block_wrap},
@@ -92,10 +114,10 @@ def ensure_minimax_h3_block_loop_support() -> str:
                         rope_freqs,
                         transformer_options=transformer_options,
                     )
-            if prefetch_queue is not None:
-                minimax_model.comfy.model_prefetch.prefetch_queue_pop(
-                    prefetch_queue, h.device, None
-                )
+            if prefetch_queue is not None or prefetch_options:
+                # New allocation graphs need the terminal scope transition even
+                # when weight prefetching is disabled and the queue is None.
+                prefetch_pop(prefetch_queue, h.device, None, **prefetch_options)
             return h
 
         def patched_forward(
@@ -105,9 +127,12 @@ def ensure_minimax_h3_block_loop_support() -> str:
             context: torch.Tensor,
             transformer_options: dict[str, Any] | None = None,
             minimax_payload: dict[str, Any] | None = None,
+            denoise_mask: torch.Tensor | None = None,
+            audio_denoise_mask: torch.Tensor | None = None,
             **kwargs: Any,
         ) -> Any:
-            transformer_options = transformer_options or {}
+            if transformer_options is None:
+                transformer_options = {}
             video_x, audio_x = x[0], x[1]
             orig_t, orig_h, orig_w = video_x.shape[2], video_x.shape[3], video_x.shape[4]
             video_x = minimax_model.comfy.ldm.common_dit.pad_to_patch_size(
@@ -125,16 +150,22 @@ def ensure_minimax_h3_block_loop_support() -> str:
 
             layout = payload.get("layout")
             if layout is None or layout.signature != (text_len, latent_t, lat_h, lat_w, audio_t):
+                layout_options = {
+                    "keyframes": payload.get("keyframes"),
+                    "refs": payload.get("refs"),
+                }
+                if _accepts_keyword(minimax_model.PackedLayout, "frame_count"):
+                    layout_options["frame_count"] = payload.get("frame_count")
                 layout = minimax_model.PackedLayout(
                     text_len,
                     latent_t,
                     lat_h,
                     lat_w,
                     audio_t,
-                    keyframes=payload.get("keyframes"),
-                    refs=payload.get("refs"),
-                    frame_count=payload.get("frame_count"),
+                    **layout_options,
                 )
+
+            transformer_options["minimax_h3_layout"] = layout
 
             shift_v = float(
                 transformer_options.get(
@@ -158,22 +189,51 @@ def ensure_minimax_h3_block_loop_support() -> str:
             aud_aug = float(
                 payload.get("audio_cond_noise_aug", minimax_model.AUDIO_COND_TIMESTEP)
             )
-            has_vis_cond = any(
-                kind in ("cond", "ref_img") for _, _, kind in layout.segments
-            )
-            has_aud_cond = any(kind == "ref_audio" for _, _, kind in layout.segments)
             seg_t = {
                 "text": t_v,
                 "video": t_v,
                 "audio": t_a,
                 "cond": max(t_v, vis_aug),
                 "ref_img": max(t_v, vis_aug),
+                "cond_audio": max(t_a, aud_aug),
                 "ref_audio": max(t_a, aud_aug),
             }
+
+            # ComfyUI v0.40 supports per-row denoising strengths. Keep these
+            # timesteps in sync with its native forward rather than ignoring masks.
+            video_rows_t = None
+            audio_rows_t = None
+            mask_rows = getattr(minimax_model, "mask_row_values", None)
+            if (denoise_mask is not None or audio_denoise_mask is not None) and not callable(mask_rows):
+                raise RuntimeError("Denoise masks require a newer ComfyUI MiniMax H3 implementation.")
+            if denoise_mask is not None:
+                mask = mask_rows(
+                    denoise_mask[0, 0].to(torch.float32), latent_t, lat_h, lat_w
+                )
+                if mask is not None:
+                    rows_t = (1.0 - mask * sigma_v.to(mask.device)).clamp(
+                        max=max(t_v, minimax_model.VISUAL_COND_TIMESTEP)
+                    )
+                    if rows_t.unique().numel() == 1:
+                        seg_t["video"] = float(rows_t[0])
+                    else:
+                        video_rows_t = rows_t
+            if audio_denoise_mask is not None:
+                mask = audio_denoise_mask[0, 0].to(torch.float32).reshape(-1)
+                if not bool((mask >= 1.0 - 1e-3).all()):
+                    rows_t = (1.0 - mask * (1.0 - t_a)).clamp(
+                        max=max(t_a, minimax_model.AUDIO_COND_TIMESTEP)
+                    )
+                    if rows_t.unique().numel() == 1:
+                        seg_t["audio"] = float(rows_t[0])
+                    else:
+                        audio_rows_t = rows_t
+
             unique_t = sorted(
                 {t_v, t_a}
-                | ({seg_t["cond"]} if has_vis_cond else set())
-                | ({seg_t["ref_audio"]} if has_aud_cond else set())
+                | {seg_t[kind] for _, _, kind in layout.segments}
+                | (set(video_rows_t.unique().tolist()) if video_rows_t is not None else set())
+                | (set(audio_rows_t.unique().tolist()) if audio_rows_t is not None else set())
             )
             t_row = {value: index for index, value in enumerate(unique_t)}
             seg_tag = {
@@ -182,8 +242,17 @@ def ensure_minimax_h3_block_loop_support() -> str:
                 "audio": 2,
                 "cond": 0,
                 "ref_img": 0,
+                "cond_audio": 2,
                 "ref_audio": 2,
             }
+
+            def rows_to_mod_index(rows_t: torch.Tensor, tag: int) -> torch.Tensor:
+                levels = rows_t.unique()
+                base = torch.tensor(
+                    [t_row[value] * 3 + tag for value in levels.tolist()],
+                    dtype=torch.long, device=rows_t.device,
+                )
+                return base[torch.searchsorted(levels, rows_t)]
 
             text_tags = payload.get("text_token_tags")
             mod_segments = []
@@ -202,6 +271,10 @@ def ensure_minimax_h3_block_loop_support() -> str:
                                 )
                             )
                             run_start = index
+                elif kind == "video" and video_rows_t is not None:
+                    mod_segments.append((start, end, rows_to_mod_index(video_rows_t, seg_tag[kind])))
+                elif kind == "audio" and audio_rows_t is not None:
+                    mod_segments.append((start, end, rows_to_mod_index(audio_rows_t, seg_tag[kind])))
                 else:
                     mod_segments.append((start, end, row_base + seg_tag[kind]))
 
@@ -324,8 +397,23 @@ def ensure_minimax_h3_block_loop_support() -> str:
                 for start, end, kind in layout.segments
                 if kind == "audio"
             )
+            if video_rows_t is not None:
+                video_seg = (*video_seg[:2], rows_to_mod_index(video_rows_t, 0) // 3)
+            if audio_rows_t is not None:
+                audio_seg = (*audio_seg[:2], rows_to_mod_index(audio_rows_t, 0) // 3)
+
+            final_options = {}
+            final_forward = getattr(self.final_layer, "forward", self.final_layer)
+            if _accepts_keyword(final_forward, "sigma"):
+                # Required by v0.40, including non-PDD checkpoints. PDD heads
+                # also need the actual sampler schedule and both stream shifts.
+                final_options = {
+                    "sigma": sigma_v,
+                    "sample_sigmas": transformer_options.get("sample_sigmas"),
+                    "shifts": (shift_v, shift_a),
+                }
             video_output, audio_output = self.final_layer(
-                h, t_emb, video_seg, audio_seg
+                h, t_emb, video_seg, audio_seg, **final_options
             )
             video_output = minimax_model.unpatchify_video(
                 video_output,
