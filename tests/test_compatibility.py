@@ -176,18 +176,20 @@ class MiniMaxCompatibilityTests(unittest.TestCase):
         })
         self.enterContext(installed_modules(self.modules))
 
-    def run_forward(self, use_cache=False):
+    def run_forward(self, use_cache=False, **overrides):
         self.assertEqual(minimax_patch.ensure_minimax_h3_block_loop_support(), "installed-runtime-hook")
         self.assertEqual(minimax_patch.ensure_minimax_h3_block_loop_support(), "existing-compatible-hook")
         video = torch.full((1, 1, 1, 2, 2), 2.0, dtype=torch.float16)
         audio = torch.full((1, 4, 1, 1), 3.0, dtype=torch.bfloat16)
         options = {"minimax_h3_sigma_shift_video": 8.0, "minimax_h3_sigma_shift_audio": 2.0}
+        options.update(overrides.pop("options", {}))
         cache = Mock(side_effect=lambda args, extra: extra["original_block"](args))
         if use_cache:
             options["patches_replace"] = {"dit": {("block_loop", 0): cache}}
+        payload = overrides.pop("payload", {"layout": self.layout})
         result = self.backend.MiniMaxH3Model()._forward(
             [video, audio], torch.tensor([500.0]), torch.ones(1, 1, 4),
-            transformer_options=options, minimax_payload={"layout": self.layout},
+            transformer_options=options, minimax_payload=payload, **overrides,
         )
         self.assertTrue(torch.equal(result[0], -video))
         self.assertEqual(result[0].dtype, video.dtype)
@@ -227,6 +229,121 @@ class MiniMaxCompatibilityTests(unittest.TestCase):
         self.backend.MiniMaxH3Model = NativeModel
         self.assertEqual(minimax_patch.ensure_minimax_h3_block_loop_support(), "existing-compatible-hook")
         self.assertIs(NativeModel._forward, original)
+
+    def test_v040_final_layer_receives_sampler_arguments(self):
+        schedule = torch.tensor([1.0, 0.5, 0.0])
+        calls = []
+
+        class FinalLayer(torch.nn.Module):
+            def forward(self, h, t_emb, video_seg, audio_seg, sigma, sample_sigmas, shifts):
+                calls.append((sigma, sample_sigmas, shifts))
+                return h[2:3], h[1:2]
+
+        self.backend.MiniMaxH3Model.final_layer = FinalLayer()
+        for use_cache in (False, True):
+            with self.subTest(use_cache=use_cache):
+                # The same class is intentionally reused between calls.
+                if calls:
+                    del self.backend.MiniMaxH3Model._speed_minimax_h3_block_loop_version
+                    del self.backend.MiniMaxH3Model._run_blocks
+                self.run_forward(use_cache=use_cache, options={"sample_sigmas": schedule})
+                sigma, actual_schedule, shifts = calls[-1]
+                self.assertAlmostEqual(float(sigma), 0.5)
+                self.assertIs(actual_schedule, schedule)
+                self.assertEqual(shifts, (8.0, 2.0))
+
+    def test_old_final_layer_keeps_four_argument_contract(self):
+        def final_layer(model, h, t_emb, video_seg, audio_seg):
+            return h[2:3], h[1:2]
+        self.backend.MiniMaxH3Model.final_layer = final_layer
+        self.run_forward(use_cache=True)
+
+    def test_final_layer_type_error_is_not_retried(self):
+        calls = []
+        def final_layer(model, h, t_emb, video_seg, audio_seg, sigma, sample_sigmas, shifts):
+            calls.append(sigma)
+            raise TypeError("error inside final layer")
+        self.backend.MiniMaxH3Model.final_layer = final_layer
+        with self.assertRaisesRegex(TypeError, "error inside final layer"):
+            self.run_forward()
+        self.assertEqual(len(calls), 1)
+
+    def test_v040_layout_rebuild_omits_removed_frame_count(self):
+        calls = []
+        def packed_layout(text_len, latent_t, lat_h, lat_w, audio_t, keyframes=None, refs=None):
+            calls.append((keyframes, refs))
+            return self.layout
+        self.backend.PackedLayout = packed_layout
+        self.run_forward(payload={"frame_count": 5})
+        self.assertEqual(calls, [(None, None)])
+
+    def test_legacy_layout_rebuild_preserves_frame_count(self):
+        calls = []
+        def packed_layout(text_len, latent_t, lat_h, lat_w, audio_t, keyframes=None, refs=None, frame_count=None):
+            calls.append(frame_count)
+            return self.layout
+        self.backend.PackedLayout = packed_layout
+        self.run_forward(payload={"frame_count": 5})
+        self.assertEqual(calls, [5])
+
+    def test_stale_layout_is_rebuilt(self):
+        self.backend.PackedLayout = Mock(return_value=self.layout)
+        self.run_forward(payload={"layout": SimpleNamespace(signature=(0, 0, 0, 0, 0))})
+        self.backend.PackedLayout.assert_called_once()
+
+    def test_v1_hook_is_upgraded_instead_of_reused(self):
+        model_class = self.backend.MiniMaxH3Model
+        model_class._speed_minimax_h3_block_loop_version = 1
+        model_class._run_blocks = lambda self: None
+        model_class._forward = lambda self: {"block_loop": None}
+        previous = model_class._forward
+        self.run_forward()
+        self.assertIsNot(model_class._forward, previous)
+        self.assertEqual(model_class._speed_minimax_h3_block_loop_version, 2)
+
+    def test_block_replacement_receives_layout_index_and_attention(self):
+        attention = object()
+        calls = []
+        class Block(torch.nn.Module):
+            def forward(self, h, t_emb, mod_segments, rope_freqs, transformer_options, attention=None):
+                calls.append((transformer_options["block_index"], attention))
+                return h
+        self.backend.MiniMaxH3Model.blocks = [Block(), Block()]
+
+        def replace(args, extra):
+            self.assertIs(args["layout"], self.layout)
+            return extra["original_block"]({**args, "attention": attention})
+        self.run_forward(options={"patches_replace": {"dit": {("double_block", 1): replace}}})
+        self.assertEqual(calls, [(0, None), (1, attention)])
+
+    def test_prefetch_malloc_scope_is_forwarded_when_supported(self):
+        calls = []
+        queue = object()
+        self.modules["comfy.model_prefetch"].make_prefetch_queue = lambda *args: queue
+        def pop(actual_queue, device, block, malloc_scope=None):
+            calls.append((actual_queue, block, malloc_scope))
+        self.modules["comfy.model_prefetch"].prefetch_queue_pop = pop
+        block = lambda h, *args, **kwargs: h
+        self.backend.MiniMaxH3Model.blocks = [block]
+        self.run_forward()
+        self.assertEqual(calls, [(queue, block, "block"), (queue, None, "block")])
+
+    def test_malloc_scope_is_closed_without_a_prefetch_queue(self):
+        calls = []
+        def pop(queue, device, block, malloc_scope=None):
+            calls.append((queue, block, malloc_scope))
+        self.modules["comfy.model_prefetch"].prefetch_queue_pop = pop
+        self.run_forward()
+        self.assertEqual(calls, [(None, None, "block")])
+
+    def test_masks_on_legacy_backend_fail_clearly(self):
+        for name in ("denoise_mask", "audio_denoise_mask"):
+            with self.subTest(name=name):
+                if getattr(self.backend.MiniMaxH3Model, "_speed_minimax_h3_block_loop_version", 0):
+                    del self.backend.MiniMaxH3Model._speed_minimax_h3_block_loop_version
+                    del self.backend.MiniMaxH3Model._run_blocks
+                with self.assertRaisesRegex(RuntimeError, "Denoise masks require a newer ComfyUI"):
+                    self.run_forward(**{name: torch.ones(1, 1, 1, 2, 2)})
 
 
 if __name__ == "__main__":
